@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type, FunctionDeclaration } from "@google/genai";
-import { AIAnalysisResult, HealthStatus, RecordType, SupabaseSettings, DogEvent } from "../types";
+import { AIAnalysisResult, HealthStatus, RecordType, SupabaseSettings, DogEvent, ChatMessage } from "../types";
 import { searchEvents } from "./supabaseService";
 
 const SYSTEM_INSTRUCTION = `
@@ -18,6 +18,7 @@ INFORMACIÓN CLAVE A EXTRAER:
    - Formato Fecha: YYYY-MM-DD.
    - Formato Hora: HH:MM (24h).
    - Si NO mencionan tiempo, devuelve null en estos campos.
+   - **Prioridad de Fechas en Documentos**: Si el usuario sube un PDF o Imagen de un informe médico antiguo, busca la fecha impresa en el documento y ÚSALA en lugar de la fecha actual.
 
 REGLAS ESPECÍFICAS Y FORMATO DE TÍTULO:
 - **PARA EL TIPO 'Caca' (IMPORTANTE)**:
@@ -44,6 +45,7 @@ REGLAS:
 2. Si encuentras resultados, analízalos médicamente. Por ejemplo, si hay muchas cacas "Malas", advierte al usuario.
 3. Sé empático y profesional.
 4. Si no encuentras datos, dilo claramente.
+5. Mantén el contexto de la conversación. Si el usuario dice "¿Y de vómitos?", se refiere al mismo periodo de tiempo del que hablabais antes.
 `;
 
 export const analyzeInput = async (
@@ -237,7 +239,7 @@ export const analyzeFile = async (base64Data: string, mimeType: string): Promise
                     }
                 },
                 {
-                    text: `Momento actual: ${now.toLocaleString('es-ES')}. Analiza este documento o imagen adjunta. Extrae la información más relevante para un registro veterinario. Identifica si es un informe médico, una analítica, una foto de un síntoma, etc.`
+                    text: `Momento actual: ${now.toLocaleString('es-ES')}. Analiza este documento o imagen adjunta. Extrae la información más relevante para un registro veterinario. Identifica si es un informe médico, una analítica, una foto de un síntoma, etc. Si el documento contiene una fecha impresa, ÚSALA como la fecha del evento.`
                 }
             ]
         },
@@ -304,7 +306,7 @@ const queryEventsTool: FunctionDeclaration = {
 };
 
 export const consultAssistant = async (
-    userMessage: string, 
+    history: ChatMessage[], 
     settings: SupabaseSettings
 ): Promise<{ text: string, events?: DogEvent[] }> => {
     const apiKey = process.env.API_KEY;
@@ -313,12 +315,24 @@ export const consultAssistant = async (
     const ai = new GoogleGenAI({ apiKey });
     const today = new Date().toISOString().split('T')[0];
 
-    // Step 1: Send user prompt with Tool Definition
+    // Build contents from history
+    const contents = history.map(msg => ({
+        role: msg.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: msg.text }]
+    }));
+
+    // Inject "Today is..." context into the LAST message (the user's current query)
+    // This allows the model to calculate relative dates (yesterday, last week) correctly at every turn.
+    const lastMessageIndex = contents.length - 1;
+    if (lastMessageIndex >= 0 && contents[lastMessageIndex].role === 'user') {
+        const originalText = contents[lastMessageIndex].parts[0].text;
+        contents[lastMessageIndex].parts[0].text = `Hoy es ${today}. ${originalText}`;
+    }
+
+    // Step 1: Send full history with Tool Definition
     let response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
-        contents: [
-            { role: 'user', parts: [{ text: `Hoy es ${today}. ${userMessage}` }] }
-        ],
+        contents: contents,
         config: {
             systemInstruction: CONSULTANT_INSTRUCTION,
             tools: [{ functionDeclarations: [queryEventsTool] }]
@@ -344,7 +358,6 @@ export const consultAssistant = async (
                 }, settings);
             } catch (e) {
                 console.error("Supabase Search Error", e);
-                // We continue even if error, passing empty list
             }
 
             // Step 3: Send Tool Response back to Gemini
@@ -368,14 +381,17 @@ export const consultAssistant = async (
                 }
             ];
 
-            // Construct history: User Prompt -> Model Call -> Tool Response
+            // Construct new history for the second turn:
+            // History -> Model Call (Tool Request) -> User (Tool Response)
+            const newContents = [
+                ...contents,
+                { role: 'model', parts: response.candidates![0].content.parts },
+                { role: 'user', parts: functionResponseParts }
+            ];
+
             response = await ai.models.generateContent({
                 model: 'gemini-2.5-flash',
-                contents: [
-                    { role: 'user', parts: [{ text: `Hoy es ${today}. ${userMessage}` }] },
-                    { role: 'model', parts: response.candidates![0].content.parts },
-                    { role: 'user', parts: functionResponseParts }
-                ],
+                contents: newContents,
                 config: {
                     systemInstruction: CONSULTANT_INSTRUCTION
                 }

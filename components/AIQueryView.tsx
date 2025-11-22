@@ -8,16 +8,16 @@ interface AIQueryViewProps {
   onEventClick: (event: DogEvent) => void;
 }
 
+const INITIAL_MESSAGE: ChatMessage = { 
+    id: 'intro', 
+    role: 'assistant', 
+    text: '¡Hola! Soy tu asistente veterinario. Pregúntame sobre el historial de salud, últimas cacas, visitas al veterinario o tendencias. ¿En qué puedo ayudarte hoy?' 
+};
+
 const AIQueryView: React.FC<AIQueryViewProps> = ({ settings, onEventClick }) => {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { 
-        id: 'intro', 
-        role: 'assistant', 
-        text: '¡Hola! Soy tu asistente veterinario. Pregúntame sobre el historial de salud, últimas cacas, visitas al veterinario o tendencias. ¿En qué puedo ayudarte hoy?' 
-    }
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>([INITIAL_MESSAGE]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Scroll to bottom on new message
@@ -26,6 +26,12 @@ const AIQueryView: React.FC<AIQueryViewProps> = ({ settings, onEventClick }) => 
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  const handleClearChat = () => {
+      if (window.confirm("¿Quieres borrar la conversación y empezar de nuevo?")) {
+          setMessages([INITIAL_MESSAGE]);
+      }
+  };
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -40,12 +46,16 @@ const AIQueryView: React.FC<AIQueryViewProps> = ({ settings, onEventClick }) => 
         text: input
     };
 
-    setMessages(prev => [...prev, userMsg]);
+    // Optimistic update
+    const newHistory = [...messages, userMsg];
+    setMessages(newHistory);
     setInput('');
     setIsLoading(true);
 
     try {
-        const response = await consultAssistant(userMsg.text, settings);
+        // Pass the full history (excluding the intro if needed, but here we include it as context 
+        // though the service usually maps roles. 'intro' will be treated as model role).
+        const response = await consultAssistant(newHistory, settings);
         
         const aiMsg: ChatMessage = {
             id: (Date.now() + 1).toString(),
@@ -59,7 +69,7 @@ const AIQueryView: React.FC<AIQueryViewProps> = ({ settings, onEventClick }) => 
         const errorMsg: ChatMessage = {
             id: (Date.now() + 1).toString(),
             role: 'assistant',
-            text: "Lo siento, tuve un problema conectando con la base de datos o procesando tu solicitud. Inténtalo de nuevo.",
+            text: `Error: ${error.message || "Problema de conexión"}`,
             isError: true
         };
         setMessages(prev => [...prev, errorMsg]);
@@ -78,14 +88,23 @@ const AIQueryView: React.FC<AIQueryViewProps> = ({ settings, onEventClick }) => 
   return (
     <div className="flex flex-col h-full bg-slate-50 relative">
         {/* Header */}
-        <header className="bg-white px-6 py-4 border-b border-slate-100 sticky top-0 z-10 flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-tr from-blue-600 to-purple-600 rounded-full flex items-center justify-center text-white shadow-md">
-                <Icons.Sparkles className="w-5 h-5" />
+        <header className="bg-white px-6 py-4 border-b border-slate-100 sticky top-0 z-10 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-gradient-to-tr from-blue-600 to-purple-600 rounded-full flex items-center justify-center text-white shadow-md">
+                    <Icons.Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                    <h2 className="text-lg font-bold text-slate-800">Asistente IA</h2>
+                    <p className="text-xs text-slate-500">Consulta tu historial médico</p>
+                </div>
             </div>
-            <div>
-                <h2 className="text-lg font-bold text-slate-800">Asistente IA</h2>
-                <p className="text-xs text-slate-500">Consulta tu historial médico</p>
-            </div>
+            <button 
+                onClick={handleClearChat}
+                className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
+                title="Borrar conversación"
+            >
+                <Icons.Trash className="w-5 h-5" />
+            </button>
         </header>
 
         {/* Chat Area - Increased padding-bottom (pb-40) to allow space for input box */}
