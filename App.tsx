@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { DogEvent, SupabaseSettings, HealthStatus, AIAnalysisResult, RecordType } from './types';
 import { saveEventToSupabase, testSupabaseConnection } from './services/supabaseService';
-import { analyzeAudio, analyzeInput, analyzeImage } from './services/geminiService';
+import { analyzeAudio, analyzeInput, analyzeImage, analyzeFile } from './services/geminiService';
 import { HEALTH_STATUS_COLORS, Icons } from './constants';
 import Navbar from './components/Navbar';
 import EventForm from './components/EventForm';
@@ -191,7 +191,7 @@ const App: React.FC = () => {
     });
   };
 
-  const mapAnalysisToDraft = (result: AIAnalysisResult, photoBase64?: string) => {
+  const mapAnalysisToDraft = (result: AIAnalysisResult, photoBase64?: string, fileBase64?: string, fileName?: string) => {
       setDraftEvent({
           title: result.title,
           recordType: result.recordType,
@@ -201,7 +201,9 @@ const App: React.FC = () => {
           // Use AI detected date/time, or fallback to now
           date: result.date || new Date().toISOString().split('T')[0],
           time: result.time || getCurrentTime(), 
-          photoBase64: photoBase64 // Pre-fill the photo
+          photoBase64: photoBase64, // Pre-fill the photo if it was an image
+          fileBase64: fileBase64, // Pre-fill generic file if PDF
+          fileName: fileName
       });
   };
 
@@ -251,6 +253,49 @@ const App: React.FC = () => {
     } finally {
         setAiProcessing(false);
     }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      setAiProcessing(true);
+      try {
+          let base64Data = '';
+          let mimeType = file.type;
+          
+          // If it's an image, we compress it first
+          if (file.type.startsWith('image/')) {
+              base64Data = await resizeImage(file);
+              mimeType = 'image/jpeg'; // resizeImage returns jpeg
+          } else {
+              // Read as raw base64 (PDFs, etc)
+              base64Data = await new Promise((resolve, reject) => {
+                  const reader = new FileReader();
+                  reader.onload = () => resolve(reader.result as string);
+                  reader.onerror = reject;
+                  reader.readAsDataURL(file);
+              });
+          }
+
+          // Send to Gemini
+          const result = await analyzeFile(base64Data, mimeType);
+
+          // Map result
+          if (file.type.startsWith('image/')) {
+              mapAnalysisToDraft(result, base64Data); // Treat as photo
+          } else {
+              mapAnalysisToDraft(result, undefined, base64Data, file.name); // Treat as file
+          }
+          
+          setInputMethod('manual');
+
+      } catch (error) {
+          console.error("File upload error", error);
+          alert("Error analizando el archivo. Asegúrate de que no sea demasiado grande.");
+      } finally {
+          setAiProcessing(false);
+      }
   };
 
   const SQL_SCRIPT = `
@@ -392,13 +437,13 @@ create policy "Fotos Publicas" on storage.objects
   );
 
   const renderAdd = () => {
-    // Logic for showing loading screen ONLY when analyzing photo
-    if (aiProcessing && inputMethod === 'menu') { // inputMethod menu + aiProcessing = Photo Analysis
+    // Logic for showing loading screen ONLY when analyzing photo/file
+    if (aiProcessing && inputMethod === 'menu') { 
         return (
             <div className="flex flex-col h-full items-center justify-center p-8 bg-slate-50">
                 <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-6"></div>
-                <h2 className="text-xl font-bold text-slate-800 mb-2">Analizando Imagen...</h2>
-                <p className="text-slate-500 text-center">La IA está examinando la foto para rellenar el formulario.</p>
+                <h2 className="text-xl font-bold text-slate-800 mb-2">Analizando...</h2>
+                <p className="text-slate-500 text-center">La IA está examinando el contenido para rellenar el formulario.</p>
             </div>
         );
     }
@@ -419,11 +464,18 @@ create policy "Fotos Publicas" on storage.objects
                         <div className="text-left"><span className="block font-semibold text-lg text-slate-700">Chat con IA</span><span className="text-sm text-slate-500">Escribe lo que pasó</span></div>
                     </button>
                     
-                    {/* New AI Camera Button */}
+                    {/* AI Camera Button */}
                     <label className="flex flex-row items-center p-5 bg-white rounded-2xl border border-slate-200 shadow-sm active:scale-95 transition-transform cursor-pointer">
                         <div className="w-12 h-12 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center mr-4 shrink-0"><Icons.ImagePlus className="w-6 h-6" /></div>
                         <div className="text-left"><span className="block font-semibold text-lg text-slate-700">Foto con IA</span><span className="text-sm text-slate-500">Analiza foto y rellena</span></div>
                         <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageCapture} />
+                    </label>
+
+                    {/* NEW: File Upload Button */}
+                    <label className="flex flex-row items-center p-5 bg-white rounded-2xl border border-slate-200 shadow-sm active:scale-95 transition-transform cursor-pointer">
+                        <div className="w-12 h-12 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mr-4 shrink-0"><Icons.Upload className="w-6 h-6" /></div>
+                        <div className="text-left"><span className="block font-semibold text-lg text-slate-700">Subir Archivo</span><span className="text-sm text-slate-500">PDF, Informes, Fotos</span></div>
+                        <input type="file" accept="image/*,.pdf" className="hidden" onChange={handleFileUpload} />
                     </label>
 
                     <button onClick={() => { setDraftEvent(undefined); setInputMethod('manual'); }} className="flex flex-row items-center p-5 bg-white rounded-2xl border border-slate-200 shadow-sm active:scale-95 transition-transform">

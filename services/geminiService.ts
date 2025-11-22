@@ -218,6 +218,62 @@ export const analyzeAudio = async (audioBase64: string): Promise<AIAnalysisResul
     return JSON.parse(response.text) as AIAnalysisResult;
 }
 
+export const analyzeFile = async (base64Data: string, mimeType: string): Promise<AIAnalysisResult> => {
+    const apiKey = process.env.API_KEY;
+    if (!apiKey) throw new Error("API Key missing");
+  
+    const ai = new GoogleGenAI({ apiKey });
+    const cleanBase64 = base64Data.split(',')[1] || base64Data;
+    const now = new Date();
+
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: {
+            parts: [
+                {
+                    inlineData: {
+                        mimeType: mimeType,
+                        data: cleanBase64
+                    }
+                },
+                {
+                    text: `Momento actual: ${now.toLocaleString('es-ES')}. Analiza este documento o imagen adjunta. Extrae la información más relevante para un registro veterinario. Identifica si es un informe médico, una analítica, una foto de un síntoma, etc.`
+                }
+            ]
+        },
+        config: {
+            systemInstruction: SYSTEM_INSTRUCTION,
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING, description: "Título (Ej: 'Informe Analítica', 'Foto Herida')" },
+                recordType: {
+                    type: Type.STRING,
+                    enum: Object.values(RecordType),
+                },
+                healthStatus: { 
+                  type: Type.STRING, 
+                  enum: Object.values(HealthStatus),
+                  nullable: true
+                },
+                description: { type: Type.STRING, description: "Resumen detallado del contenido del archivo" },
+                weight: { type: Type.NUMBER, description: "Peso en kg si aparece en el documento", nullable: true },
+                date: { type: Type.STRING, description: "Fecha del documento o evento YYYY-MM-DD", nullable: true },
+                time: { type: Type.STRING, description: "Hora HH:MM", nullable: true },
+              },
+              required: ["title", "recordType"]
+            }
+        }
+    });
+
+    if (!response.text) {
+        throw new Error("No analysis generated from file");
+    }
+  
+    return JSON.parse(response.text) as AIAnalysisResult;
+}
+
 // --- NEW: Consultant Logic with Tool Use ---
 
 const queryEventsTool: FunctionDeclaration = {
@@ -306,7 +362,8 @@ export const consultAssistant = async (
                 {
                     functionResponse: {
                         name: 'query_events',
-                        response: { result: minimalEvents }
+                        response: { result: minimalEvents },
+                        id: call.id
                     }
                 }
             ];
