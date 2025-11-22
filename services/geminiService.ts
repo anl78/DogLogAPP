@@ -53,8 +53,8 @@ export const analyzeInput = async (
   const apiKey = process.env.API_KEY;
   if (!apiKey) throw new Error("API Key missing");
 
-  //const ai = new GoogleGenAI({ apiKey });
-   const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_API_KEY });
+  const ai = new GoogleGenAI({ apiKey });
+   //const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_API_KEY });
   const now = new Date();
   const contextPrompt = `Momento actual del sistema: ${now.toLocaleString('es-ES')}. Analiza esto: "${textInput}"`;
 
