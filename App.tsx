@@ -159,7 +159,76 @@ const App: React.FC = () => {
       return `${hours}:${minutes}`;
   };
 
-  // Image Resizing Utility (Duplicated from EventForm to use in App level)
+  // Helper: Extract EXIF Date from File object (JPEG)
+  const getExifDate = (file: File): Promise<Date | null> => {
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const view = new DataView(e.target?.result as ArrayBuffer);
+                // Check for JPEG SOI marker
+                if (view.getUint16(0, false) !== 0xFFD8) return resolve(null);
+
+                const length = view.byteLength;
+                let offset = 2;
+
+                while (offset < length) {
+                    if (offset + 4 > length) break;
+                    const marker = view.getUint16(offset, false);
+                    offset += 2;
+
+                    if (marker === 0xFFE1) {
+                        // Check for "Exif" string
+                        if (view.getUint32(offset + 4, false) !== 0x45786966) return resolve(null);
+
+                        const littleEndian = view.getUint16(offset + 10, false) === 0x4949;
+                        
+                        // TIFF Header starts at offset + 10
+                        let tiffStart = offset + 10;
+                        const ifdOffset = view.getUint32(tiffStart + 4, littleEndian);
+                        let ifdStart = tiffStart + ifdOffset;
+                        
+                        const entries = view.getUint16(ifdStart, littleEndian);
+                        
+                        for (let i = 0; i < entries; i++) {
+                            const entryOffset = ifdStart + 2 + (i * 12);
+                            const tag = view.getUint16(entryOffset, littleEndian);
+                            
+                            // Tag 0x9003 is DateTimeOriginal
+                            if (tag === 0x9003) {
+                                const valueOffset = view.getUint32(entryOffset + 8, littleEndian);
+                                const dateOffset = tiffStart + valueOffset;
+                                
+                                let dateString = "";
+                                for (let j = 0; j < 19; j++) {
+                                    dateString += String.fromCharCode(view.getUint8(dateOffset + j));
+                                }
+                                
+                                // Format: "YYYY:MM:DD HH:MM:SS"
+                                const [d, t] = dateString.split(" ");
+                                const [year, month, day] = d.split(":");
+                                const [hour, min, sec] = t.split(":");
+                                
+                                const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(min), Number(sec));
+                                resolve(date);
+                                return;
+                            }
+                        }
+                    } 
+                    else if ((marker & 0xFF00) !== 0xFF00) break;
+                    else offset += view.getUint16(offset, false);
+                }
+            } catch (err) {
+                console.warn("EXIF Parse error", err);
+            }
+            resolve(null);
+        };
+        // Read first 64KB is usually enough for EXIF
+        reader.readAsArrayBuffer(file.slice(0, 64 * 1024));
+    });
+  };
+
+  // Image Resizing Utility
   const resizeImage = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -191,18 +260,41 @@ const App: React.FC = () => {
     });
   };
 
-  const mapAnalysisToDraft = (result: AIAnalysisResult, photoBase64?: string, fileBase64?: string, fileName?: string) => {
+  const mapAnalysisToDraft = (
+      result: AIAnalysisResult, 
+      photoBase64?: string, 
+      fileBase64?: string, 
+      fileName?: string,
+      overrideDate?: Date | null
+  ) => {
+      let finalDate = result.date;
+      let finalTime = result.time;
+
+      // Priority: 1. Override Date (EXIF) 2. AI Extracted Date 3. Current Date
+      if (overrideDate) {
+          const yyyy = overrideDate.getFullYear();
+          const mm = String(overrideDate.getMonth() + 1).padStart(2, '0');
+          const dd = String(overrideDate.getDate()).padStart(2, '0');
+          finalDate = `${yyyy}-${mm}-${dd}`;
+          
+          const hh = String(overrideDate.getHours()).padStart(2, '0');
+          const min = String(overrideDate.getMinutes()).padStart(2, '0');
+          finalTime = `${hh}:${min}`;
+      }
+
+      if (!finalDate) finalDate = new Date().toISOString().split('T')[0];
+      if (!finalTime) finalTime = getCurrentTime();
+
       setDraftEvent({
           title: result.title,
           recordType: result.recordType,
           healthStatus: result.healthStatus,
           description: result.description,
           weight: result.weight,
-          // Use AI detected date/time, or fallback to now
-          date: result.date || new Date().toISOString().split('T')[0],
-          time: result.time || getCurrentTime(), 
-          photoBase64: photoBase64, // Pre-fill the photo if it was an image
-          fileBase64: fileBase64, // Pre-fill generic file if PDF
+          date: finalDate,
+          time: finalTime, 
+          photoBase64: photoBase64, 
+          fileBase64: fileBase64, 
           fileName: fileName
       });
   };
@@ -212,7 +304,7 @@ const App: React.FC = () => {
     try {
         const result: AIAnalysisResult = await analyzeAudio(base64Audio);
         mapAnalysisToDraft(result);
-        setInputMethod('manual'); // Switch to manual form for review
+        setInputMethod('manual'); 
     } catch (error) {
         console.error(error);
         alert("Error analizando audio. Intenta de nuevo.");
@@ -263,13 +355,20 @@ const App: React.FC = () => {
       try {
           let base64Data = '';
           let mimeType = file.type;
+          let exifDate: Date | null = null;
           
-          // If it's an image, we compress it first
           if (file.type.startsWith('image/')) {
+              // Try to extract EXIF before resizing (resizing strips metadata)
+              try {
+                 exifDate = await getExifDate(file);
+                 if (exifDate) console.log("EXIF Date Found:", exifDate);
+              } catch (e) {
+                 console.log("Could not read EXIF", e);
+              }
+
               base64Data = await resizeImage(file);
-              mimeType = 'image/jpeg'; // resizeImage returns jpeg
+              mimeType = 'image/jpeg'; 
           } else {
-              // Read as raw base64 (PDFs, etc)
               base64Data = await new Promise((resolve, reject) => {
                   const reader = new FileReader();
                   reader.onload = () => resolve(reader.result as string);
@@ -278,14 +377,12 @@ const App: React.FC = () => {
               });
           }
 
-          // Send to Gemini
           const result = await analyzeFile(base64Data, mimeType);
 
-          // Map result
           if (file.type.startsWith('image/')) {
-              mapAnalysisToDraft(result, base64Data); // Treat as photo
+              mapAnalysisToDraft(result, base64Data, undefined, undefined, exifDate); 
           } else {
-              mapAnalysisToDraft(result, undefined, base64Data, file.name); // Treat as file
+              mapAnalysisToDraft(result, undefined, base64Data, file.name); 
           }
           
           setInputMethod('manual');
