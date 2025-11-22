@@ -3,16 +3,15 @@ import react from '@vitejs/plugin-react';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
-  // Carga las variables de entorno dependiendo del modo (development/production)
-  // En Vercel, las variables de entorno están disponibles en process.env durante el build si se prefijan correctamente,
-  // pero aquí usamos 'define' para reemplazar process.env.API_KEY por el valor real.
-  // Use type assertion for process to avoid TS error about missing cwd() method
+  // Carga las variables de entorno dependiendo del modo.
+  // Usamos 'process' casteado a any para evitar errores de tipado estricto si @types/node no está completo.
   const env = loadEnv(mode, (process as any).cwd(), '');
   
   return {
     plugins: [react()],
     define: {
-      // Esto permite que el código que usa `process.env.API_KEY` siga funcionando
+      // Esto inyecta la API KEY en el cliente. 
+      // IMPORTANTE: En producción (Vercel), debes añadir la variable 'API_KEY' en la configuración del proyecto en Vercel.
       'process.env.API_KEY': JSON.stringify(env.API_KEY || process.env.API_KEY)
     }
   };
