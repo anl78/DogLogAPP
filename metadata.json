@@ -1,0 +1,8 @@
+{
+  "name": "DogLog Assistant V4",
+  "description": "Hasta aquí ya registra el evento en supabase",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}
