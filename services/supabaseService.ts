@@ -175,7 +175,7 @@ export const inviteCollaborator = async (
     try {
         console.log("Inviting email:", email);
         // 1. Find User ID by Email using RPC (Secure)
-        // CHANGED: Use 'target_email' parameter to avoid ambiguity with column 'email'
+        // Uses 'target_email' to avoid ambiguity
         const { data: userId, error: rpcError } = await client.rpc('get_user_id_by_email', { target_email: email });
         
         if (rpcError) return { success: false, error: `Error buscando usuario: ${rpcError.message}` };
@@ -246,6 +246,29 @@ export const removeCollaborator = async (
     return { success: true };
 };
 
+export const getCollaboratorPermissions = async (
+    settings: SupabaseSettings,
+    petId: string,
+    userId: string,
+    accessToken?: string
+): Promise<CollaboratorPermissions | null> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return null;
+
+    const { data, error } = await client
+        .from('pet_collaborators')
+        .select('permissions')
+        .eq('pet_id', petId)
+        .eq('user_id', userId)
+        .single();
+
+    if (error) {
+        console.warn("Error getting permissions:", error.message);
+        return null;
+    }
+    return data.permissions as CollaboratorPermissions;
+};
+
 
 // --- CRUD ---
 
@@ -274,6 +297,9 @@ export const saveEventToSupabase = async (event: DogEvent, settings: SupabaseSet
 
             if (uploadError) {
                 console.error("Upload failed:", uploadError);
+                if (uploadError.statusCode === '403' || (uploadError as any).code === '42501') {
+                    return { success: false, error: `⛔ No tienes permiso para subir fotos.` };
+                }
                 return { success: false, error: `Error subiendo foto (Storage): ${uploadError.message}` };
             }
 
@@ -313,6 +339,12 @@ export const saveEventToSupabase = async (event: DogEvent, settings: SupabaseSet
 
         if (insertError) {
             const msg = insertError.message || JSON.stringify(insertError);
+            
+            // Check for RLS Violation (42501)
+            if (insertError.code === '42501') {
+                 return { success: false, error: "⛔ Acceso Denegado: No tienes permiso para crear o editar este evento según la configuración del dueño." };
+            }
+
             if (insertError.code === '23503') {
                 return { success: false, error: `Datos inválidos (FK Error): ${insertError.details}` };
             }
@@ -330,7 +362,21 @@ export const deleteEvent = async (eventId: string, photoUrl: string | undefined,
     if (!client) return { success: false, error: "Error de cliente." };
 
     try {
-        // 1. Delete Photo from Storage
+        // 1. Delete Record from DB FIRST to check permissions logic
+        const { error: dbError } = await client
+            .from('events')
+            .delete()
+            .eq('id', eventId);
+
+        if (dbError) {
+            // Check for RLS Violation (42501)
+            if (dbError.code === '42501') {
+                return { success: false, error: "⛔ Acceso Denegado: No tienes permiso para eliminar este evento." };
+            }
+            return { success: false, error: dbError.message };
+        }
+
+        // 2. Delete Photo from Storage (Only if DB delete succeeded)
         if (photoUrl) {
             const parts = photoUrl.split('/');
             const fileName = parts[parts.length - 1];
@@ -342,16 +388,6 @@ export const deleteEvent = async (eventId: string, photoUrl: string | undefined,
                 
                 if (storageError) console.warn("Could not delete photo file:", storageError);
             }
-        }
-
-        // 2. Delete Record from DB
-        const { error: dbError } = await client
-            .from('events')
-            .delete()
-            .eq('id', eventId);
-
-        if (dbError) {
-            return { success: false, error: dbError.message };
         }
 
         return { success: true };

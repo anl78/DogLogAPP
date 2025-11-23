@@ -7,9 +7,18 @@ interface EventFormProps {
   onSubmit: (event: DogEvent) => void;
   onCancel: () => void;
   onDelete?: () => void;
+  canEdit?: boolean;
+  canDelete?: boolean;
 }
 
-const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, onDelete }) => {
+const EventForm: React.FC<EventFormProps> = ({ 
+    initialData, 
+    onSubmit, 
+    onCancel, 
+    onDelete,
+    canEdit = true,
+    canDelete = true 
+}) => {
   // Helper strictly for 24h format HH:mm (HTML input time requires this)
   const getCurrentTime = () => {
       const now = new Date();
@@ -48,6 +57,7 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, 
   }, [initialData]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+    if (!canEdit) return;
     const { name, value } = e.target;
     setFormData(prev => ({
       ...prev,
@@ -90,6 +100,7 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, 
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, type: 'photo' | 'file') => {
+    if (!canEdit) return;
     const file = e.target.files?.[0];
     if (file) {
         try {
@@ -132,6 +143,8 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, 
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canEdit) return;
+
     setIsSubmitting(true);
     
     // Small timeout to allow UI to update to "Guardando..." before heavy lifting
@@ -180,6 +193,13 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, 
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5 pb-24 px-1">
+      {!canEdit && (
+          <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg flex items-center gap-2">
+              <Icons.AlertTriangle className="w-5 h-5 text-amber-600" />
+              <p className="text-sm text-amber-800 font-medium">Modo solo lectura (Sin permisos de edición)</p>
+          </div>
+      )}
+
       {/* Title */}
       <div>
         <label className="block text-sm font-medium text-slate-700 mb-1">Título del Evento *</label>
@@ -189,7 +209,8 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, 
           value={formData.title}
           onChange={handleInputChange}
           placeholder="Ej: Caca blanda, Vacunación"
-          className="w-full p-3 rounded-xl border border-slate-200 bg-white text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm"
+          disabled={!canEdit}
+          className="w-full p-3 rounded-xl border border-slate-200 bg-white text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm disabled:bg-slate-100 disabled:text-slate-500"
         />
       </div>
 
@@ -200,7 +221,8 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, 
           name="recordType"
           value={formData.recordType}
           onChange={handleInputChange}
-          className="w-full p-3 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 outline-none shadow-sm appearance-none"
+          disabled={!canEdit}
+          className="w-full p-3 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 outline-none shadow-sm appearance-none disabled:bg-slate-100 disabled:text-slate-500"
         >
            {Object.values(RecordType).map(type => (
             <option key={type} value={type}>{type}</option>
@@ -217,7 +239,8 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, 
             name="date"
             value={formData.date}
             onChange={handleInputChange}
-            className="w-full p-3 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 outline-none shadow-sm text-sm"
+            disabled={!canEdit}
+            className="w-full p-3 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 outline-none shadow-sm text-sm disabled:bg-slate-100 disabled:text-slate-500"
           />
         </div>
         <div>
@@ -227,7 +250,8 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, 
             name="time"
             value={formData.time}
             onChange={handleInputChange}
-            className="w-full p-3 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 outline-none shadow-sm text-sm"
+            disabled={!canEdit}
+            className="w-full p-3 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 outline-none shadow-sm text-sm disabled:bg-slate-100 disabled:text-slate-500"
           />
         </div>
       </div>
@@ -239,7 +263,8 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, 
           name="healthStatus"
           value={formData.healthStatus || ''}
           onChange={handleInputChange}
-          className="w-full p-3 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 outline-none shadow-sm appearance-none"
+          disabled={!canEdit}
+          className="w-full p-3 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 outline-none shadow-sm appearance-none disabled:bg-slate-100 disabled:text-slate-500"
         >
           <option value="">-- Ninguno / No aplica --</option>
           {Object.values(HealthStatus).map(status => (
@@ -263,7 +288,8 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, 
           value={formData.weight !== undefined ? formData.weight : ''}
           onChange={handleInputChange}
           placeholder="0.0"
-          className="w-full p-3 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 outline-none shadow-sm"
+          disabled={!canEdit}
+          className="w-full p-3 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 outline-none shadow-sm disabled:bg-slate-100 disabled:text-slate-500"
         />
       </div>
 
@@ -276,38 +302,41 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, 
           value={formData.description}
           onChange={handleInputChange}
           placeholder="Detalles del comportamiento, comida, etc."
-          className="w-full p-3 rounded-xl border border-slate-200 bg-white text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm resize-none"
+          disabled={!canEdit}
+          className="w-full p-3 rounded-xl border border-slate-200 bg-white text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm resize-none disabled:bg-slate-100 disabled:text-slate-500"
         />
       </div>
 
       {/* Attachments */}
       <div className="space-y-3">
         <div>
-            <label className="flex items-center space-x-2 p-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 text-slate-600 active:bg-slate-100 cursor-pointer">
+            <label className={`flex items-center space-x-2 p-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 text-slate-600 ${canEdit ? 'active:bg-slate-100 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>
                 <Icons.Camera className="w-5 h-5" />
                 <span className="text-sm">{previewImage ? 'Cambiar Foto' : 'Adjuntar Foto'}</span>
-                <input type="file" accept="image/*" onChange={(e) => handleFileChange(e, 'photo')} className="hidden" />
+                <input type="file" accept="image/*" onChange={(e) => handleFileChange(e, 'photo')} className="hidden" disabled={!canEdit} />
             </label>
             {previewImage && (
                 <div className="mt-2 relative w-24 h-24 rounded-lg overflow-hidden border border-slate-200">
                     <img src={previewImage} alt="Preview" className="w-full h-full object-cover" />
-                    <button 
-                        type="button"
-                        onClick={() => setFormData(prev => ({...prev, photoBase64: undefined, photoUrl: undefined}))}
-                        className="absolute top-0 right-0 bg-black/50 text-white p-1 rounded-bl-lg"
-                    >
-                        <Icons.Trash className="w-3 h-3" />
-                    </button>
+                    {canEdit && (
+                        <button 
+                            type="button"
+                            onClick={() => setFormData(prev => ({...prev, photoBase64: undefined, photoUrl: undefined}))}
+                            className="absolute top-0 right-0 bg-black/50 text-white p-1 rounded-bl-lg"
+                        >
+                            <Icons.Trash className="w-3 h-3" />
+                        </button>
+                    )}
                 </div>
             )}
         </div>
         
         {/* Generic File (Simulated) */}
         <div>
-            <label className="flex items-center space-x-2 p-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 text-slate-600 active:bg-slate-100 cursor-pointer">
+            <label className={`flex items-center space-x-2 p-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 text-slate-600 ${canEdit ? 'active:bg-slate-100 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>
                 <span className="text-xl">📎</span>
                 <span className="text-sm">{formData.fileName || 'Adjuntar Archivo'}</span>
-                <input type="file" onChange={(e) => handleFileChange(e, 'file')} className="hidden" />
+                <input type="file" onChange={(e) => handleFileChange(e, 'file')} className="hidden" disabled={!canEdit} />
             </label>
         </div>
       </div>
@@ -321,29 +350,31 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, 
             disabled={isSubmitting}
             className="flex-1 py-3.5 bg-slate-100 text-slate-700 font-semibold rounded-xl active:scale-[0.98] transition-transform disabled:opacity-50"
             >
-            Cancelar
+            Volver
             </button>
-            <button
-            type="submit"
-            disabled={isSubmitting}
-            className="flex-1 py-3.5 bg-blue-600 text-white font-semibold rounded-xl shadow-lg shadow-blue-200 active:scale-[0.98] transition-transform flex justify-center items-center space-x-2 disabled:opacity-70"
-            >
-            {isSubmitting ? (
-                <span className="flex items-center gap-2">
-                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                Procesando...
-                </span>
-            ) : (
-                <>
-                <Icons.Check className="w-5 h-5" />
-                <span>Guardar</span>
-                </>
+            {canEdit && (
+                <button
+                type="submit"
+                disabled={isSubmitting}
+                className="flex-1 py-3.5 bg-blue-600 text-white font-semibold rounded-xl shadow-lg shadow-blue-200 active:scale-[0.98] transition-transform flex justify-center items-center space-x-2 disabled:opacity-70"
+                >
+                {isSubmitting ? (
+                    <span className="flex items-center gap-2">
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                    Procesando...
+                    </span>
+                ) : (
+                    <>
+                    <Icons.Check className="w-5 h-5" />
+                    <span>Guardar</span>
+                    </>
+                )}
+                </button>
             )}
-            </button>
         </div>
         
         {/* DELETE BUTTON with Visual Confirmation */}
-        {initialData?.id && onDelete && (
+        {initialData?.id && onDelete && canDelete && (
              <div className="mt-4 pt-4 border-t border-slate-100">
                 {!showDeleteConfirm ? (
                     <button

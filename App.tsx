@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { DogEvent, SupabaseSettings, HealthStatus, AIAnalysisResult, RecordType, Pet } from './types';
-import { saveEventToSupabase, testSupabaseConnection, searchEvents, deleteEvent, getUserPets, createPet } from './services/supabaseService';
+import { DogEvent, SupabaseSettings, HealthStatus, AIAnalysisResult, RecordType, Pet, CollaboratorPermissions } from './types';
+import { saveEventToSupabase, testSupabaseConnection, searchEvents, deleteEvent, getUserPets, createPet, getCollaboratorPermissions } from './services/supabaseService';
 import { analyzeAudio, analyzeInput, analyzeImage, analyzeFile } from './services/geminiService';
 import { HEALTH_STATUS_COLORS, Icons } from './constants';
 import Navbar from './components/Navbar';
@@ -13,6 +13,13 @@ import TeamManager from './components/TeamManager';
 import Auth from './components/Auth';
 
 const PAGE_SIZE = 25;
+
+const DEFAULT_OWNER_PERMISSIONS: CollaboratorPermissions = {
+    can_create: true,
+    can_edit: 'all',
+    can_delete: 'all',
+    visible_types: []
+};
 
 const App: React.FC = () => {
   // --- Environment Variables Check ---
@@ -27,6 +34,9 @@ const App: React.FC = () => {
   const [pets, setPets] = useState<Pet[]>([]);
   const [currentPet, setCurrentPet] = useState<Pet | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+
+  // Permissions State
+  const [permissions, setPermissions] = useState<CollaboratorPermissions>(DEFAULT_OWNER_PERMISSIONS);
 
   // State for creating pet inside App (fallback)
   const [newPetName, setNewPetName] = useState('');
@@ -106,6 +116,27 @@ const App: React.FC = () => {
         loadPets();
     }
   }, [session, settings]);
+
+  // --- Load Permissions when Pet Changes ---
+  useEffect(() => {
+      const loadPerms = async () => {
+          if (!currentPet || !session?.user) return;
+          
+          // Check if owner
+          if (currentPet.owner_id === session.user.id) {
+              setPermissions(DEFAULT_OWNER_PERMISSIONS);
+              return;
+          }
+          
+          // If collaborator, fetch perms
+          const perms = await getCollaboratorPermissions(settings, currentPet.id, session.user.id, session.access_token);
+          if (perms) {
+              setPermissions(perms);
+          }
+      };
+      
+      loadPerms();
+  }, [currentPet, session]);
 
 
   // --- Event & Pagination State ---
@@ -220,13 +251,24 @@ const App: React.FC = () => {
         return;
     }
     
+    // Permission Check: Create
+    if (!event.id && !permissions.can_create) {
+        alert("No tienes permiso para crear eventos.");
+        return;
+    }
+    
     setIsLoading(true);
     try {
         let eventToSave = { ...event };
         
         // Inject Relations
         eventToSave.petId = currentPet.id;
-        if (session?.user?.id) eventToSave.userId = session.user.id;
+        
+        // CRITICAL FIX: Only assign userId if this is a NEW event.
+        // If editing, preserve the original owner (handled by DB, or keep existing).
+        if (!event.id && session?.user?.id) {
+            eventToSave.userId = session.user.id;
+        }
 
         if (settings.supabaseUrl && settings.supabaseKey) {
             // PASS ACCESS TOKEN
@@ -264,6 +306,9 @@ const App: React.FC = () => {
   };
 
   const handleDeleteEvent = async (event: DogEvent) => {
+      // Permission check handled in UI, but double check here logic would be complex without full context
+      // relying on RLS and UI props.
+      
       setIsLoading(true);
       try {
           if (settings.supabaseUrl && settings.supabaseKey) {
@@ -282,7 +327,7 @@ const App: React.FC = () => {
       }
   };
 
-  // --- Standard Helpers ---
+  // --- Helpers ---
   const getCurrentTime = () => {
       const now = new Date();
       return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -423,6 +468,26 @@ const App: React.FC = () => {
       } catch { alert("Error archivo"); } finally { setAiProcessing(false); }
   };
 
+  // --- PERMISSION HELPERS FOR UI ---
+  const isTypeVisible = (type: RecordType) => {
+      if (!permissions.visible_types || permissions.visible_types.length === 0) return true;
+      return permissions.visible_types.includes(type);
+  };
+  
+  const calculateCanEdit = (event?: Partial<DogEvent>) => {
+      if (!event || !event.id) return permissions.can_create; // New event
+      if (permissions.can_edit === 'all') return true;
+      if (permissions.can_edit === 'own') return event.userId === session?.user?.id;
+      return false;
+  };
+
+  const calculateCanDelete = (event?: Partial<DogEvent>) => {
+      if (!event || !event.id) return false;
+      if (permissions.can_delete === 'all') return true;
+      if (permissions.can_delete === 'own') return event.userId === session?.user?.id;
+      return false;
+  };
+
   // --- RENDER SECTIONS ---
   
   const renderHome = () => (
@@ -450,7 +515,7 @@ const App: React.FC = () => {
             )}
         </header>
         <div className="flex-1 overflow-y-auto p-4 pb-28 space-y-4 no-scrollbar">
-            {events.map(ev => (
+            {events.filter(ev => isTypeVisible(ev.recordType)).map(ev => (
                 <div key={ev.id} onClick={() => { setDraftEvent(ev); setInputMethod('manual'); setView('add'); }} className="bg-white rounded-2xl p-4 shadow-sm border relative cursor-pointer active:scale-[0.98]">
                     <span className="absolute top-0 right-0 bg-slate-100 px-3 py-1 rounded-bl-xl text-xs font-bold">{ev.recordType}</span>
                     <h3 className="font-bold text-lg mb-2 pr-12">{ev.title}</h3>
@@ -472,13 +537,21 @@ const App: React.FC = () => {
       if(inputMethod==='menu') return (
           <div className="h-full px-6 pt-6 bg-slate-50 overflow-y-auto pb-24 space-y-4">
               <h2 className="text-2xl font-bold text-slate-800">Nuevo Evento</h2>
-              {[
-                {m:'voice',i:<Icons.Mic className="w-6"/>,t:'Voz',c:'bg-blue-100 text-blue-600'},
-                {m:'chat',i:<Icons.MessageSquare className="w-6"/>,t:'Chat',c:'bg-purple-100 text-purple-600'},
-                {m:'manual',i:<Icons.Plus className="w-6"/>,t:'Manual',c:'bg-emerald-100 text-emerald-600'}
-              ].map(o=>(<button key={o.m} onClick={()=>setInputMethod(o.m as any)} className="flex items-center p-5 bg-white rounded-2xl border shadow-sm w-full"><div className={`w-12 h-12 rounded-full flex items-center justify-center mr-4 ${o.c}`}>{o.i}</div><span className="font-bold text-lg">{o.t}</span></button>))}
-              <label className="flex items-center p-5 bg-white rounded-2xl border shadow-sm w-full cursor-pointer"><div className="w-12 h-12 rounded-full bg-orange-100 text-orange-600 flex items-center justify-center mr-4"><Icons.ImagePlus className="w-6"/></div><span className="font-bold text-lg">Foto</span><input type="file" accept="image/*" className="hidden" onChange={handleImageCapture}/></label>
-              <label className="flex items-center p-5 bg-white rounded-2xl border shadow-sm w-full cursor-pointer"><div className="w-12 h-12 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center mr-4"><Icons.Upload className="w-6"/></div><span className="font-bold text-lg">Archivo</span><input type="file" accept="image/*,.pdf" className="hidden" onChange={handleFileUpload}/></label>
+              {!permissions.can_create ? (
+                  <div className="p-4 bg-amber-50 text-amber-800 border border-amber-200 rounded-xl text-center">
+                      No tienes permiso para crear eventos.
+                  </div>
+              ) : (
+                  <>
+                  {[
+                    {m:'voice',i:<Icons.Mic className="w-6"/>,t:'Voz',c:'bg-blue-100 text-blue-600'},
+                    {m:'chat',i:<Icons.MessageSquare className="w-6"/>,t:'Chat',c:'bg-purple-100 text-purple-600'},
+                    {m:'manual',i:<Icons.Plus className="w-6"/>,t:'Manual',c:'bg-emerald-100 text-emerald-600'}
+                  ].map(o=>(<button key={o.m} onClick={()=>setInputMethod(o.m as any)} className="flex items-center p-5 bg-white rounded-2xl border shadow-sm w-full"><div className={`w-12 h-12 rounded-full flex items-center justify-center mr-4 ${o.c}`}>{o.i}</div><span className="font-bold text-lg">{o.t}</span></button>))}
+                  <label className="flex items-center p-5 bg-white rounded-2xl border shadow-sm w-full cursor-pointer"><div className="w-12 h-12 rounded-full bg-orange-100 text-orange-600 flex items-center justify-center mr-4"><Icons.ImagePlus className="w-6"/></div><span className="font-bold text-lg">Foto</span><input type="file" accept="image/*" className="hidden" onChange={handleImageCapture}/></label>
+                  <label className="flex items-center p-5 bg-white rounded-2xl border shadow-sm w-full cursor-pointer"><div className="w-12 h-12 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center mr-4"><Icons.Upload className="w-6"/></div><span className="font-bold text-lg">Archivo</span><input type="file" accept="image/*,.pdf" className="hidden" onChange={handleFileUpload}/></label>
+                  </>
+              )}
           </div>
       );
       if(inputMethod==='voice') return <div className="h-full flex flex-col items-center pt-10"><h2 className="text-2xl font-bold mb-10">Dictado</h2><AudioRecorder onAudioCaptured={handleAudioCaptured} isProcessing={aiProcessing}/><button onClick={()=>setInputMethod('menu')} className="mt-10 underline">Cancelar</button></div>;
@@ -488,7 +561,14 @@ const App: React.FC = () => {
         <div className="flex flex-col h-full bg-slate-50">
             <header className="bg-white px-6 py-4 border-b flex items-center gap-3"><button onClick={()=>setInputMethod('menu')}>🔙</button><h2 className="font-bold">Editar</h2></header>
             <div className="flex-1 overflow-y-auto p-4">
-                <EventForm initialData={draftEvent} onSubmit={handleEventSubmit} onCancel={()=>setView('home')} onDelete={draftEvent?.id?()=>handleDeleteEvent(draftEvent as DogEvent):undefined}/>
+                <EventForm 
+                    initialData={draftEvent} 
+                    onSubmit={handleEventSubmit} 
+                    onCancel={()=>setView('home')} 
+                    onDelete={draftEvent?.id?()=>handleDeleteEvent(draftEvent as DogEvent):undefined}
+                    canEdit={calculateCanEdit(draftEvent)}
+                    canDelete={calculateCanDelete(draftEvent)}
+                />
             </div>
             {isLoading && <div className="absolute inset-0 bg-white/80 flex items-center justify-center">Guardando...</div>}
         </div>
