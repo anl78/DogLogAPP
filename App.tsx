@@ -549,12 +549,12 @@ create policy "Fotos Publicas" on storage.objects
 
   const renderHome = () => {
     // 1. Determine which events to show
-    let filteredEvents = events;
+    let filteredEvents = [...events];
     const hasActiveFilters = !!(filterConfig.startDate || filterConfig.endDate || filterConfig.recordType || filterConfig.searchTitle);
 
     if (hasActiveFilters) {
         // --- Custom Filter Logic ---
-        filteredEvents = events.filter(e => {
+        filteredEvents = filteredEvents.filter(e => {
             // Date Range
             if (filterConfig.startDate && e.date < filterConfig.startDate) return false;
             if (filterConfig.endDate && e.date > filterConfig.endDate) return false;
@@ -572,14 +572,23 @@ create policy "Fotos Publicas" on storage.objects
         });
     } else {
         // --- Default View Logic (Incrementally by days) ---
+        // FIX: Use local date construction to avoid UTC offsets
         const cutoffDate = new Date();
-        // Calculate cutoff based on visibleDays state
         cutoffDate.setDate(cutoffDate.getDate() - visibleDays);
-        const cutoffStr = cutoffDate.toISOString().split('T')[0];
+        
+        const yyyy = cutoffDate.getFullYear();
+        const mm = String(cutoffDate.getMonth() + 1).padStart(2, '0');
+        const dd = String(cutoffDate.getDate()).padStart(2, '0');
+        const cutoffStr = `${yyyy}-${mm}-${dd}`;
 
-        // Since date is YYYY-MM-DD string, simple comparison works
-        filteredEvents = events.filter(e => e.date >= cutoffStr);
+        filteredEvents = filteredEvents.filter(e => e.date >= cutoffStr);
     }
+
+    // Explicitly sort DESC by Date and Time
+    filteredEvents.sort((a, b) => {
+        if (a.date !== b.date) return b.date.localeCompare(a.date);
+        return b.time.localeCompare(a.time);
+    });
 
     // Check if there are more events to load hidden by the date filter
     const hasHiddenEvents = !hasActiveFilters && events.length > filteredEvents.length;
