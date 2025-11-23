@@ -177,6 +177,8 @@ const EventForm: React.FC<EventFormProps> = ({
                 photoUrl: formData.photoUrl,
                 fileBase64: formData.fileBase64,
                 fileName: formData.fileName,
+                userId: formData.userId, // PRESERVE OWNERSHIP
+                petId: formData.petId,   // PRESERVE CONTEXT
                 synced: false
             };
             
