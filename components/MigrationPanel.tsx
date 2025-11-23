@@ -124,7 +124,7 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings, curre
 
     return (
         <div className="mt-6 bg-slate-50 border border-slate-200 rounded-xl p-4 animate-fade-in-up">
-            <h3 className="font-bold text-slate-700 mb-2">Gestión de Datos Notion &rarr; Supabase</h3>
+            <h3 className="font-bold text-slate-700 mb-2">Gestión de Datos: Notion a Supabase</h3>
             
             <div className="space-y-3">
                 {/* Notion Config */}
