@@ -51,6 +51,27 @@ export interface Pet {
   owner_id: string;
 }
 
+// --- PERMISSIONS STRUCTURE ---
+export interface CollaboratorPermissions {
+    can_create: boolean;
+    can_edit: 'own' | 'all' | 'none';
+    can_delete: 'own' | 'all' | 'none';
+    // If empty, ALL types are visible. If populated, ONLY these are visible.
+    visible_types: RecordType[]; 
+}
+
+export interface PetCollaborator {
+    pet_id: string;
+    user_id: string;
+    role: 'owner' | 'editor' | 'viewer';
+    permissions: CollaboratorPermissions;
+    // Joined profile data
+    profiles?: {
+        email: string;
+        full_name?: string;
+    };
+}
+
 export interface DogEvent {
   id: string;
   title: string;

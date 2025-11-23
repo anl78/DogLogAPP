@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { DogEvent, SupabaseSettings, ConnectionResult, EventSearchParams, RecordType, Pet } from '../types';
+import { DogEvent, SupabaseSettings, ConnectionResult, EventSearchParams, RecordType, Pet, PetCollaborator, CollaboratorPermissions } from '../types';
 
 // Helper to create a fresh client every time. 
 // If accessToken is provided, we inject it into the global headers to ensure RLS works for Storage/DB.
@@ -88,8 +88,6 @@ export const getUserPets = async (settings: SupabaseSettings, accessToken?: stri
         // Get current user details from the token
         const { data: { user }, error: authError } = await client.auth.getUser();
         if (authError || !user) {
-             // If getUser fails via token, try just using the ID from session context if passed (not available here directly)
-             // But usually getUser works if token is valid.
              console.error("Auth Error in getUserPets:", authError?.message);
              return [];
         }
@@ -140,6 +138,112 @@ export const createPet = async (settings: SupabaseSettings, name: string, ownerI
     }
     return data as Pet;
 };
+
+// --- TEAM MANAGEMENT (COLLABORATORS) ---
+
+export const getCollaborators = async (settings: SupabaseSettings, petId: string, accessToken?: string): Promise<PetCollaborator[]> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return [];
+
+    const { data, error } = await client
+        .from('pet_collaborators')
+        .select(`
+            pet_id,
+            user_id,
+            role,
+            permissions,
+            profiles ( email, full_name )
+        `)
+        .eq('pet_id', petId);
+
+    if (error) {
+        console.error("Error getting collaborators:", error);
+        return [];
+    }
+    return data as PetCollaborator[];
+};
+
+export const inviteCollaborator = async (
+    settings: SupabaseSettings, 
+    petId: string, 
+    email: string, 
+    accessToken?: string
+): Promise<{ success: boolean; error?: string }> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return { success: false, error: "Client error" };
+
+    try {
+        // 1. Find User ID by Email using RPC (Secure)
+        const { data: userId, error: rpcError } = await client.rpc('get_user_id_by_email', { email });
+        
+        if (rpcError) return { success: false, error: `Error buscando usuario: ${rpcError.message}` };
+        if (!userId) return { success: false, error: "Usuario no encontrado. Pídele que se registre en la App primero." };
+
+        // 2. Insert into collaborators
+        const { error: insertError } = await client
+            .from('pet_collaborators')
+            .insert({
+                pet_id: petId,
+                user_id: userId,
+                role: 'viewer', // Default role
+                permissions: { 
+                    can_create: true, 
+                    can_edit: 'own', 
+                    can_delete: 'own', 
+                    visible_types: [] // All
+                }
+            });
+
+        if (insertError) {
+            if (insertError.code === '23505') return { success: false, error: "Este usuario ya es miembro." };
+            return { success: false, error: insertError.message };
+        }
+
+        return { success: true };
+
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+};
+
+export const updateCollaboratorPermissions = async (
+    settings: SupabaseSettings,
+    petId: string,
+    userId: string,
+    permissions: CollaboratorPermissions,
+    role: string,
+    accessToken?: string
+): Promise<{ success: boolean; error?: string }> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return { success: false, error: "Client error" };
+
+    const { error } = await client
+        .from('pet_collaborators')
+        .update({ permissions, role })
+        .match({ pet_id: petId, user_id: userId });
+
+    if (error) return { success: false, error: error.message };
+    return { success: true };
+};
+
+export const removeCollaborator = async (
+    settings: SupabaseSettings,
+    petId: string,
+    userId: string,
+    accessToken?: string
+): Promise<{ success: boolean; error?: string }> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return { success: false, error: "Client error" };
+
+    const { error } = await client
+        .from('pet_collaborators')
+        .delete()
+        .match({ pet_id: petId, user_id: userId });
+
+    if (error) return { success: false, error: error.message };
+    return { success: true };
+};
+
 
 // --- CRUD ---
 
@@ -232,9 +336,7 @@ export const deleteEvent = async (eventId: string, photoUrl: string | undefined,
             if (fileName) {
                 const { error: storageError } = await client.storage
                     .from('dog_photos')
-                    .remove([`${fileName}`]); // Try root
-                    // Note: If inside folder, we might need full path. 
-                    // But usually getPublicUrl returns name at end.
+                    .remove([`${fileName}`]); 
                 
                 if (storageError) console.warn("Could not delete photo file:", storageError);
             }

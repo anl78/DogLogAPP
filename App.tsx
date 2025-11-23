@@ -9,6 +9,7 @@ import EventForm from './components/EventForm';
 import AudioRecorder from './components/AudioRecorder';
 import AIQueryView from './components/AIQueryView';
 import MigrationPanel from './components/MigrationPanel';
+import TeamManager from './components/TeamManager';
 import Auth from './components/Auth';
 
 const PAGE_SIZE = 25;
@@ -516,6 +517,16 @@ const App: React.FC = () => {
           </div>
           <button onClick={handleLogout} className="w-full py-3 border border-red-200 text-red-600 rounded-xl font-bold mb-6 bg-white">Cerrar Sesión</button>
           
+          {/* TEAM MANAGEMENT */}
+          {currentPet && session?.user && (
+            <TeamManager 
+                settings={settings}
+                currentPet={currentPet}
+                currentUserId={session.user.id}
+                accessToken={session.access_token}
+            />
+          )}
+
           <MigrationPanel 
             supabaseSettings={settings} 
             currentPet={currentPet} 
