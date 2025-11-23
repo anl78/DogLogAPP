@@ -87,11 +87,10 @@ const App: React.FC = () => {
     const loadPets = async () => {
         if (session && settings.supabaseUrl) {
             try {
-                const userPets = await getUserPets(settings);
+                // PASS ACCESS TOKEN
+                const userPets = await getUserPets(settings, session.access_token);
                 setPets(userPets);
                 if (userPets.length > 0) {
-                    // Default to first pet for now
-                    // TODO: Load last selected pet from local storage
                     setCurrentPet(userPets[0]);
                 }
             } catch (e) {
@@ -146,6 +145,7 @@ const App: React.FC = () => {
     try {
         const currentPage = reset ? 0 : page;
         
+        // PASS ACCESS TOKEN
         const newBatch = await searchEvents({
             startDate: filterConfig.startDate || undefined,
             endDate: filterConfig.endDate || undefined,
@@ -153,8 +153,8 @@ const App: React.FC = () => {
             searchTitle: filterConfig.searchTitle || undefined,
             page: currentPage,
             pageSize: PAGE_SIZE,
-            petId: currentPet.id // REQUIRED
-        }, settings);
+            petId: currentPet.id
+        }, settings, session?.access_token);
 
         if (reset) {
             setEvents(newBatch);
@@ -191,7 +191,6 @@ const App: React.FC = () => {
     if (settings.supabaseUrl && settings.supabaseKey) {
         const client = createClient(settings.supabaseUrl, settings.supabaseKey);
         await client.auth.signOut();
-        // Session state handled by auth listener
     }
   };
 
@@ -199,7 +198,8 @@ const App: React.FC = () => {
       if (!newPetName.trim() || !session?.user?.id) return;
       setCreatingPet(true);
       try {
-          const newPet = await createPet(settings, newPetName, session.user.id);
+          // PASS ACCESS TOKEN
+          const newPet = await createPet(settings, newPetName, session.user.id, session.access_token);
           if (newPet) {
               setPets([newPet]);
               setCurrentPet(newPet);
@@ -228,7 +228,8 @@ const App: React.FC = () => {
         if (session?.user?.id) eventToSave.userId = session.user.id;
 
         if (settings.supabaseUrl && settings.supabaseKey) {
-            const result = await saveEventToSupabase(eventToSave, settings);
+            // PASS ACCESS TOKEN
+            const result = await saveEventToSupabase(eventToSave, settings, session?.access_token);
             if (result.success) {
                 eventToSave.synced = true;
                 if (result.newId) eventToSave.id = result.newId;
@@ -265,7 +266,8 @@ const App: React.FC = () => {
       setIsLoading(true);
       try {
           if (settings.supabaseUrl && settings.supabaseKey) {
-              const result = await deleteEvent(event.id, event.photoUrl, settings);
+              // PASS ACCESS TOKEN
+              const result = await deleteEvent(event.id, event.photoUrl, settings, session?.access_token);
               if (!result.success) throw new Error(result.error);
           }
           setEvents(prev => prev.filter(e => e.id !== event.id));
@@ -279,7 +281,7 @@ const App: React.FC = () => {
       }
   };
 
-  // --- Standard Helpers (Same as before) ---
+  // --- Standard Helpers ---
   const getCurrentTime = () => {
       const now = new Date();
       return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -400,11 +402,9 @@ const App: React.FC = () => {
   const handleImageCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const f = e.target.files?.[0]; if(!f) return; setAiProcessing(true);
       try { 
-          // EXTRACT EXIF DATE BEFORE RESIZING
           const date = await getExifDate(f);
           const b64 = await resizeImage(f); 
           const r = await analyzeImage(b64); 
-          // PASS EXIF DATE
           mapAnalysisToDraft(r, b64, undefined, undefined, date); 
           setInputMethod('manual'); 
       }
@@ -516,7 +516,11 @@ const App: React.FC = () => {
           </div>
           <button onClick={handleLogout} className="w-full py-3 border border-red-200 text-red-600 rounded-xl font-bold mb-6 bg-white">Cerrar Sesión</button>
           
-          <MigrationPanel supabaseSettings={settings} currentPet={currentPet} currentUser={session?.user} />
+          <MigrationPanel 
+            supabaseSettings={settings} 
+            currentPet={currentPet} 
+            currentUser={session?.user} 
+          />
       </div>
   );
 
@@ -524,7 +528,6 @@ const App: React.FC = () => {
 
   if (authLoading) return <div className="h-full w-full flex items-center justify-center">Cargando...</div>;
 
-  // 1. Not Logged In -> Auth Screen
   if (!session) {
       if (settings.supabaseUrl && settings.supabaseKey) {
           return <Auth settings={settings} onLoginSuccess={() => setAuthLoading(false)} />;
@@ -539,8 +542,6 @@ const App: React.FC = () => {
       );
   }
 
-  // 2. Logged In but No Pet 
-  // This happens if registration created user but 'createPet' failed, or if email was just confirmed.
   if (session && !currentPet) {
       return (
         <div className="h-full flex flex-col items-center justify-center p-6 text-center bg-slate-50">
@@ -569,7 +570,6 @@ const App: React.FC = () => {
       );
   }
 
-  // 3. Main App
   return (
     <div className="h-full w-full max-w-md mx-auto bg-white shadow-2xl relative overflow-hidden">
         {view === 'home' && renderHome()}

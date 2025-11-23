@@ -277,7 +277,6 @@ export const startMigration = async (
             let recordType = Object.values(RecordType).find(r => r === recordTypeStr) || RecordType.SUMMARY;
 
             // --- STRICT DATE/TIME PARSING (Fixing Timezone Issues) ---
-            // We read the RAW strings from Notion. We do NOT use new Date() to parse them.
             
             // 1. Date: Notion returns "YYYY-MM-DD" in date.start
             let dateStr = props['Fecha']?.date?.start || "";
@@ -318,7 +317,6 @@ export const startMigration = async (
             }
 
             // --- NO AI ---
-            // Description stays as is.
 
             const newEvent: DogEvent = {
                 id: generateUUID(), 
@@ -333,7 +331,10 @@ export const startMigration = async (
                 synced: false
             };
 
-            const saveResult = await saveEventToSupabase(newEvent, supabaseSettings);
+            // NOTE: Migration runs with generic settings, usually admin or special key.
+            // If running from client, RLS might block if not authenticated.
+            // For now passing undefined token.
+            const saveResult = await saveEventToSupabase(newEvent, supabaseSettings, undefined);
             
             if (!saveResult.success) {
                 log(`   ❌ Error guardando: ${saveResult.error}`);

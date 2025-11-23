@@ -1,25 +1,35 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { DogEvent, SupabaseSettings, ConnectionResult, EventSearchParams, RecordType, Pet } from '../types';
 
-// Helper to create a fresh client every time to avoid stale auth/config
-const createFreshClient = (settings: SupabaseSettings): SupabaseClient | null => {
+// Helper to create a fresh client every time. 
+// If accessToken is provided, we inject it into the global headers to ensure RLS works for Storage/DB.
+const createFreshClient = (settings: SupabaseSettings, accessToken?: string): SupabaseClient | null => {
   let cleanUrl = settings.supabaseUrl.trim();
-  // Ensure protocol
   if (!cleanUrl.startsWith('http')) {
     cleanUrl = `https://${cleanUrl}`;
   }
-  // Remove trailing slash
   cleanUrl = cleanUrl.replace(/\/$/, "");
 
   if (cleanUrl && settings.supabaseKey) {
     try {
-        return createClient(cleanUrl, settings.supabaseKey, {
+        const options: any = {
           auth: {
-            persistSession: true, // Persist session for Auth flow
-            autoRefreshToken: true,
-            detectSessionInUrl: true
+            persistSession: !accessToken, // Only auto-persist if we don't have a manual token
+            autoRefreshToken: !accessToken,
+            detectSessionInUrl: !accessToken
           }
-        });
+        };
+
+        // If we have a token (logged in user), force it in headers
+        if (accessToken) {
+            options.global = {
+                headers: {
+                    Authorization: `Bearer ${accessToken}`
+                }
+            };
+        }
+
+        return createClient(cleanUrl, settings.supabaseKey, options);
     } catch (e) {
         console.error("Client creation failed:", e);
         return null;
@@ -50,7 +60,6 @@ export const testSupabaseConnection = async (settings: SupabaseSettings): Promis
         const { data, error: basicError } = await client.from('events').select('id').limit(1);
         
         if (basicError) {
-            // Ignore 'empty' error, just check connectivity
             if (basicError.code === 'PGRST116') return { success: true, message: "Conexión OK (Tabla vacía)" };
 
             const errString = JSON.stringify(basicError);
@@ -71,18 +80,19 @@ export const testSupabaseConnection = async (settings: SupabaseSettings): Promis
 
 // --- NEW AUTH / PET HELPERS ---
 
-export const getUserPets = async (settings: SupabaseSettings): Promise<Pet[]> => {
+export const getUserPets = async (settings: SupabaseSettings, accessToken?: string): Promise<Pet[]> => {
     try {
-        const client = createFreshClient(settings);
+        const client = createFreshClient(settings, accessToken);
         if (!client) return [];
 
-        // Get current user
+        // Get current user details from the token
         const { data: { user }, error: authError } = await client.auth.getUser();
-        if (authError) {
-             console.error("Auth Error:", authError.message);
+        if (authError || !user) {
+             // If getUser fails via token, try just using the ID from session context if passed (not available here directly)
+             // But usually getUser works if token is valid.
+             console.error("Auth Error in getUserPets:", authError?.message);
              return [];
         }
-        if (!user) return [];
 
         // Query 'pet_collaborators' joined with 'pets'
         const { data, error } = await client
@@ -98,7 +108,6 @@ export const getUserPets = async (settings: SupabaseSettings): Promise<Pet[]> =>
             .eq('user_id', user.id);
 
         if (error) {
-            // Handle both Supabase objects and native Errors
             console.error("Error fetching pets (DB):", error.message || JSON.stringify(error));
             return [];
         }
@@ -112,8 +121,8 @@ export const getUserPets = async (settings: SupabaseSettings): Promise<Pet[]> =>
     }
 };
 
-export const createPet = async (settings: SupabaseSettings, name: string, ownerId: string): Promise<Pet | null> => {
-    const client = createFreshClient(settings);
+export const createPet = async (settings: SupabaseSettings, name: string, ownerId: string, accessToken?: string): Promise<Pet | null> => {
+    const client = createFreshClient(settings, accessToken);
     if (!client) return null;
 
     const { data, error } = await client
@@ -126,18 +135,16 @@ export const createPet = async (settings: SupabaseSettings, name: string, ownerI
         .single();
 
     if (error) {
-        // Return null instead of throwing so UI can handle it gracefully if needed, 
-        // or rethrow with clear message
         console.error("Error creating pet:", JSON.stringify(error));
-        throw new Error(error.message);
+        return null;
     }
     return data as Pet;
 };
 
 // --- CRUD ---
 
-export const saveEventToSupabase = async (event: DogEvent, settings: SupabaseSettings): Promise<{ success: boolean; error?: string; photoUrl?: string; newId?: string }> => {
-    const client = createFreshClient(settings);
+export const saveEventToSupabase = async (event: DogEvent, settings: SupabaseSettings, accessToken?: string): Promise<{ success: boolean; error?: string; photoUrl?: string; newId?: string }> => {
+    const client = createFreshClient(settings, accessToken);
     if (!client) return { success: false, error: "Error iniciando cliente Supabase." };
 
     if (!event.petId) {
@@ -146,7 +153,7 @@ export const saveEventToSupabase = async (event: DogEvent, settings: SupabaseSet
 
     let publicPhotoUrl = null;
 
-    // 1. Upload Photo (Soft fail)
+    // 1. Upload Photo (Hard fail logic)
     if (event.photoBase64) {
         try {
             const blob = base64ToBlob(event.photoBase64);
@@ -154,37 +161,42 @@ export const saveEventToSupabase = async (event: DogEvent, settings: SupabaseSet
             
             const { error: uploadError } = await client.storage
                 .from('dog_photos')
-                .upload(fileName, blob, { contentType: 'image/jpeg' });
+                .upload(fileName, blob, { 
+                    contentType: 'image/jpeg',
+                    upsert: true 
+                });
 
-            if (!uploadError) {
-                const { data: urlData } = client.storage.from('dog_photos').getPublicUrl(fileName);
-                publicPhotoUrl = urlData.publicUrl;
-            } else {
-                console.warn("Upload failed:", uploadError);
+            if (uploadError) {
+                console.error("Upload failed:", uploadError);
+                return { success: false, error: `Error subiendo foto (Storage): ${uploadError.message}` };
             }
-        } catch (err) {
+
+            const { data: urlData } = client.storage.from('dog_photos').getPublicUrl(fileName);
+            publicPhotoUrl = urlData.publicUrl;
+
+        } catch (err: any) {
             console.error("Photo upload crash:", err);
+            return { success: false, error: `Error procesando imagen: ${err.message}` };
         }
     }
 
-    // 2. Insert Record (using Upsert to handle edits if ID exists)
+    // 2. Insert Record
     try {
-        // Strict Time Format HH:mm:ss
         let cleanTime = event.time;
         if (cleanTime.length === 5) cleanTime += ":00";
 
         const payload = {
             id: event.id, 
             title: event.title,
-            record_type: event.recordType, // Now checked against Foreign Key
+            record_type: event.recordType,
             date: event.date,
             time: cleanTime,
             health_status: event.healthStatus || null,
             weight: (event.weight !== undefined && event.weight !== null && !isNaN(Number(event.weight))) ? Number(event.weight) : null,
             description: event.description,
             photo_url: publicPhotoUrl || event.photoUrl,
-            pet_id: event.petId, // REQUIRED FK
-            user_id: event.userId // Optional, for audit
+            pet_id: event.petId,
+            user_id: event.userId
         };
 
         const { data, error: insertError } = await client
@@ -195,11 +207,9 @@ export const saveEventToSupabase = async (event: DogEvent, settings: SupabaseSet
 
         if (insertError) {
             const msg = insertError.message || JSON.stringify(insertError);
-            
             if (insertError.code === '23503') {
                 return { success: false, error: `Datos inválidos (FK Error): ${insertError.details}` };
             }
-
             return { success: false, error: `DB Error (${insertError.code}): ${msg}` };
         }
 
@@ -209,12 +219,12 @@ export const saveEventToSupabase = async (event: DogEvent, settings: SupabaseSet
     }
 };
 
-export const deleteEvent = async (eventId: string, photoUrl: string | undefined, settings: SupabaseSettings): Promise<{ success: boolean; error?: string }> => {
-    const client = createFreshClient(settings);
+export const deleteEvent = async (eventId: string, photoUrl: string | undefined, settings: SupabaseSettings, accessToken?: string): Promise<{ success: boolean; error?: string }> => {
+    const client = createFreshClient(settings, accessToken);
     if (!client) return { success: false, error: "Error de cliente." };
 
     try {
-        // 1. Delete Photo from Storage if exists
+        // 1. Delete Photo from Storage
         if (photoUrl) {
             const parts = photoUrl.split('/');
             const fileName = parts[parts.length - 1];
@@ -222,7 +232,9 @@ export const deleteEvent = async (eventId: string, photoUrl: string | undefined,
             if (fileName) {
                 const { error: storageError } = await client.storage
                     .from('dog_photos')
-                    .remove([fileName]);
+                    .remove([`${fileName}`]); // Try root
+                    // Note: If inside folder, we might need full path. 
+                    // But usually getPublicUrl returns name at end.
                 
                 if (storageError) console.warn("Could not delete photo file:", storageError);
             }
@@ -245,43 +257,26 @@ export const deleteEvent = async (eventId: string, photoUrl: string | undefined,
     }
 };
 
-export const searchEvents = async (params: EventSearchParams, settings: SupabaseSettings): Promise<DogEvent[]> => {
-    const client = createFreshClient(settings);
+export const searchEvents = async (params: EventSearchParams, settings: SupabaseSettings, accessToken?: string): Promise<DogEvent[]> => {
+    const client = createFreshClient(settings, accessToken);
     if (!client) return [];
 
     let query = client.from('events').select('*');
 
-    // --- Mandatory Context Filter ---
     if (params.petId) {
         query = query.eq('pet_id', params.petId);
     } else {
-        // If no petId provided (shouldn't happen in logged in app), return empty to be safe
         console.warn("Search attempted without petId");
         return [];
     }
 
-    // --- Server Side Filtering ---
+    if (params.recordType) query = query.eq('record_type', params.recordType);
+    if (params.startDate) query = query.gte('date', params.startDate);
+    if (params.endDate) query = query.lte('date', params.endDate);
+    if (params.searchTitle) query = query.ilike('title', `%${params.searchTitle}%`);
 
-    if (params.recordType) {
-        query = query.eq('record_type', params.recordType);
-    }
-    
-    if (params.startDate) {
-        query = query.gte('date', params.startDate);
-    }
-    
-    if (params.endDate) {
-        query = query.lte('date', params.endDate);
-    }
-
-    if (params.searchTitle) {
-        query = query.ilike('title', `%${params.searchTitle}%`);
-    }
-
-    // Always newest first
     query = query.order('date', { ascending: false }).order('time', { ascending: false });
 
-    // --- Pagination ---
     if (params.page !== undefined && params.pageSize !== undefined) {
         const from = params.page * params.pageSize;
         const to = from + params.pageSize - 1;
@@ -304,7 +299,7 @@ export const searchEvents = async (params: EventSearchParams, settings: Supabase
         title: row.title,
         recordType: row.record_type as RecordType,
         date: row.date,
-        time: row.time.substring(0, 5), // HH:mm
+        time: row.time.substring(0, 5),
         healthStatus: row.health_status,
         weight: row.weight,
         description: row.description,
