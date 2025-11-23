@@ -72,33 +72,44 @@ export const testSupabaseConnection = async (settings: SupabaseSettings): Promis
 // --- NEW AUTH / PET HELPERS ---
 
 export const getUserPets = async (settings: SupabaseSettings): Promise<Pet[]> => {
-    const client = createFreshClient(settings);
-    if (!client) return [];
+    try {
+        const client = createFreshClient(settings);
+        if (!client) return [];
 
-    // Get current user
-    const { data: { user } } = await client.auth.getUser();
-    if (!user) return [];
+        // Get current user
+        const { data: { user }, error: authError } = await client.auth.getUser();
+        if (authError) {
+             console.error("Auth Error:", authError.message);
+             return [];
+        }
+        if (!user) return [];
 
-    // Query 'pet_collaborators' joined with 'pets'
-    const { data, error } = await client
-        .from('pet_collaborators')
-        .select(`
-            pet:pets (
-                id,
-                name,
-                photo_url,
-                owner_id
-            )
-        `)
-        .eq('user_id', user.id);
+        // Query 'pet_collaborators' joined with 'pets'
+        const { data, error } = await client
+            .from('pet_collaborators')
+            .select(`
+                pets (
+                    id,
+                    name,
+                    photo_url,
+                    owner_id
+                )
+            `)
+            .eq('user_id', user.id);
 
-    if (error) {
-        console.error("Error fetching pets:", error);
+        if (error) {
+            // Handle both Supabase objects and native Errors
+            console.error("Error fetching pets (DB):", error.message || JSON.stringify(error));
+            return [];
+        }
+
+        // Flatten structure
+        return (data || []).map((row: any) => row.pets as Pet).filter(p => !!p);
+
+    } catch (e: any) {
+        console.error("Critical Error fetching pets (Network):", e.message || e);
         return [];
     }
-
-    // Flatten structure
-    return data.map((row: any) => row.pet as Pet);
 };
 
 export const createPet = async (settings: SupabaseSettings, name: string, ownerId: string): Promise<Pet | null> => {
@@ -115,6 +126,9 @@ export const createPet = async (settings: SupabaseSettings, name: string, ownerI
         .single();
 
     if (error) {
+        // Return null instead of throwing so UI can handle it gracefully if needed, 
+        // or rethrow with clear message
+        console.error("Error creating pet:", JSON.stringify(error));
         throw new Error(error.message);
     }
     return data as Pet;
@@ -204,19 +218,8 @@ export const deleteEvent = async (eventId: string, photoUrl: string | undefined,
         if (photoUrl) {
             const parts = photoUrl.split('/');
             const fileName = parts[parts.length - 1];
-            // If organized by folders, might need full path extraction. 
-            // Assuming simple filename or "folder/filename" logic if bucket allows.
-            // For robustness, we try to match the path stored.
-            
-            // NOTE: If we used folders in saveEvent (petId/filename), standard split might lose folder.
-            // Better to use the path after the bucket name if possible. 
-            // For now, let's assume flat or the fileName handles it if simple. 
-            // If deletion fails, it's acceptable garbage.
             
             if (fileName) {
-                 // Try deleting just filename, or try to guess folder? 
-                 // If we implemented folder structure, we should ideally store "storage_path" in DB.
-                 // For this iteration, we accept simple delete attempt.
                 const { error: storageError } = await client.storage
                     .from('dog_photos')
                     .remove([fileName]);
