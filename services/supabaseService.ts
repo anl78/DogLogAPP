@@ -173,8 +173,10 @@ export const inviteCollaborator = async (
     if (!client) return { success: false, error: "Client error" };
 
     try {
+        console.log("Inviting email:", email);
         // 1. Find User ID by Email using RPC (Secure)
-        const { data: userId, error: rpcError } = await client.rpc('get_user_id_by_email', { email });
+        // CHANGED: Use 'target_email' parameter to avoid ambiguity with column 'email'
+        const { data: userId, error: rpcError } = await client.rpc('get_user_id_by_email', { target_email: email });
         
         if (rpcError) return { success: false, error: `Error buscando usuario: ${rpcError.message}` };
         if (!userId) return { success: false, error: "Usuario no encontrado. Pídele que se registre en la App primero." };
