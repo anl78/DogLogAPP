@@ -571,9 +571,28 @@ create policy "Fotos Publicas" on storage.objects
             return true;
         });
     } else {
-        // --- Default View Logic (Incrementally by days) ---
-        // FIX: Use local date construction to avoid UTC offsets
-        const cutoffDate = new Date();
+        // --- Default View Logic (Data-Driven Anchor) ---
+        // Find the LATEST event date (Anchor) to ensure users see their most recent data,
+        // even if it's in the future (2025) or past, instead of relying on System Date.
+        
+        let anchorDate = new Date(); // Default to today if no events
+        
+        if (events.length > 0) {
+            // Sort a copy to find the latest date string "YYYY-MM-DD"
+            const latestEvent = [...events].sort((a, b) => {
+                 if (a.date !== b.date) return b.date.localeCompare(a.date);
+                 return b.time.localeCompare(a.time);
+            })[0];
+            
+            if (latestEvent && latestEvent.date) {
+                const [y, m, d] = latestEvent.date.split('-').map(Number);
+                // Construct date in local time (months are 0-indexed)
+                anchorDate = new Date(y, m - 1, d);
+            }
+        }
+
+        // Calculate Cutoff based on Anchor - visibleDays
+        const cutoffDate = new Date(anchorDate);
         cutoffDate.setDate(cutoffDate.getDate() - visibleDays);
         
         const yyyy = cutoffDate.getFullYear();
@@ -696,7 +715,7 @@ create policy "Fotos Publicas" on storage.objects
                 <>
                     {!hasActiveFilters && (
                         <div className="mb-2 flex items-center justify-between text-xs text-slate-400 px-1">
-                            <span>Mostrando últimos {visibleDays} días</span>
+                            <span>Mostrando últimos {visibleDays} días (desde último registro)</span>
                         </div>
                     )}
                     
