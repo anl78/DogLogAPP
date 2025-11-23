@@ -50,16 +50,8 @@ const Auth: React.FC<AuthProps> = ({ settings, onLoginSuccess }) => {
     setLoading(true);
     setError(null);
 
-    if (!petName.trim()) {
-        setError("Por favor, introduce el nombre de tu mascota.");
-        setLoading(false);
-        return;
-    }
-
     try {
         // 1. Sign Up User
-        // IMPORTANTE: emailRedirectTo asegura que el link del correo vuelva a ESTA app,
-        // no a localhost:3000 por defecto.
         const { data, error: signUpError } = await supabase.auth.signUp({
             email,
             password,
@@ -73,32 +65,28 @@ const Auth: React.FC<AuthProps> = ({ settings, onLoginSuccess }) => {
 
         if (signUpError) throw signUpError;
         
-        // CASE: Email Confirmation Required (Supabase default)
+        // CASE: Email Confirmation Required
         if (data.user && !data.session) {
             alert("¡Cuenta creada! Hemos enviado un enlace de confirmación a tu correo. Por favor, confírmalo antes de iniciar sesión.");
-            setMode('login'); // Switch to login tab so they can enter after confirming
+            setMode('login');
             setLoading(false);
             return;
         }
 
-        // CASE: Auto-login successful (Email confirmation disabled or implicit)
+        // CASE: Auto-login successful
         if (data.session && data.user) {
-            // 2. Create Pet
-            // We pass the user ID from the auth response.
-            try {
-                // We recreate the client with the session to ensure permissions work if RLS is strict
-                // But createPet uses a fresh client from settings usually. 
-                // Ideally, we pass the session token, but for now we rely on the backend accepting the insert
-                // or the user being implicitly logged in.
-                await createPet(settings, petName, data.user.id);
-                alert("¡Cuenta y Mascota creadas con éxito!");
-                onLoginSuccess();
-            } catch (petError) {
-                console.error("Error creating pet:", petError);
-                // Non-blocking. User is created. They will land on "No Pet Found" screen in App.tsx
-                // and can create it there.
-                onLoginSuccess();
+            // 2. Create Pet (OPTIONAL)
+            if (petName.trim()) {
+                try {
+                    await createPet(settings, petName, data.user.id);
+                    alert("¡Cuenta y Mascota creadas con éxito!");
+                } catch (petError) {
+                    console.error("Error creating pet:", petError);
+                }
+            } else {
+                alert("¡Cuenta de cuidador creada! Ahora pide al dueño que te invite.");
             }
+            onLoginSuccess();
         }
 
     } catch (err: any) {
@@ -151,15 +139,15 @@ const Auth: React.FC<AuthProps> = ({ settings, onLoginSuccess }) => {
                             />
                         </div>
                         <div>
-                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1 ml-1">Nombre de Mascota</label>
+                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1 ml-1">Nombre de Mascota (Opcional)</label>
                             <input
                                 type="text"
                                 value={petName}
                                 onChange={e => setPetName(e.target.value)}
                                 className="w-full p-3 rounded-xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                                placeholder="Ej: Toby"
-                                required
+                                placeholder="Déjalo vacío si eres cuidador"
                             />
+                            <p className="text-[10px] text-slate-400 ml-1">Si eres cuidador, no rellenes esto.</p>
                         </div>
                         <div className="border-t border-slate-100 my-4"></div>
                     </div>
@@ -201,7 +189,7 @@ const Auth: React.FC<AuthProps> = ({ settings, onLoginSuccess }) => {
                     disabled={loading}
                     className="w-full py-4 bg-blue-600 text-white font-bold rounded-xl shadow-lg shadow-blue-200 active:scale-[0.98] transition-all disabled:opacity-70 mt-4"
                 >
-                    {loading ? 'Procesando...' : (mode === 'login' ? 'Entrar' : 'Registrarse y Crear Perfil')}
+                    {loading ? 'Procesando...' : (mode === 'login' ? 'Entrar' : 'Registrarse')}
                 </button>
             </form>
         </div>

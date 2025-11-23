@@ -554,11 +554,32 @@ const App: React.FC = () => {
   }
 
   if (session && !currentPet) {
+      // SCREEN FOR USERS WITHOUT A PET (OWNERS OR COLLABORATORS)
       return (
         <div className="h-full flex flex-col items-center justify-center p-6 text-center bg-slate-50">
-            <h2 className="text-2xl font-bold mb-2 text-slate-800">¡Casi listo!</h2>
-            <p className="text-slate-500 mb-6">Tu usuario está activo, pero necesitamos crear el perfil de tu mascota.</p>
+            <h2 className="text-2xl font-bold mb-2 text-slate-800">Bienvenido/a</h2>
+            <p className="text-slate-500 mb-6">No tienes ninguna mascota asociada aún.</p>
             
+            {/* OPTION A: Collaborator Waiting */}
+            <div className="w-full max-w-xs bg-blue-50 p-4 rounded-2xl border border-blue-100 mb-6">
+                <p className="text-sm text-blue-800 font-bold mb-2">¿Eres cuidador?</p>
+                <p className="text-xs text-blue-600 mb-3">Pide al dueño que te invite a este email:</p>
+                <div className="bg-white p-2 rounded border border-blue-100 text-xs font-mono select-all mb-3">
+                    {session.user.email}
+                </div>
+                <button 
+                    onClick={() => window.location.reload()}
+                    className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-sm"
+                >
+                    🔄 Ya me han invitado (Actualizar)
+                </button>
+            </div>
+
+            <div className="w-full border-t border-slate-200 my-4 relative">
+                <span className="absolute top-[-10px] left-1/2 -translate-x-1/2 bg-slate-50 px-2 text-xs text-slate-400">O crea una nueva</span>
+            </div>
+
+            {/* OPTION B: Owner Creating Pet */}
             <div className="w-full max-w-xs bg-white p-4 rounded-2xl shadow-sm border mb-4">
                 <input 
                     type="text" 
@@ -570,13 +591,13 @@ const App: React.FC = () => {
                 <button 
                     onClick={handleCreatePet}
                     disabled={creatingPet || !newPetName.trim()}
-                    className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold disabled:opacity-50"
+                    className="w-full bg-slate-800 text-white py-3 rounded-xl font-bold disabled:opacity-50"
                 >
-                    {creatingPet ? 'Creando...' : 'Crear Perfil'}
+                    {creatingPet ? 'Creando...' : 'Crear Perfil de Mascota'}
                 </button>
             </div>
 
-            <button onClick={handleLogout} className="text-red-500 underline text-sm">Cerrar Sesión</button>
+            <button onClick={handleLogout} className="text-red-500 underline text-sm mt-4">Cerrar Sesión</button>
         </div>
       );
   }
