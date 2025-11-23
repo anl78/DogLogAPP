@@ -399,7 +399,15 @@ const App: React.FC = () => {
   };
   const handleImageCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const f = e.target.files?.[0]; if(!f) return; setAiProcessing(true);
-      try { const b64 = await resizeImage(f); const r = await analyzeImage(b64); mapAnalysisToDraft(r, b64); setInputMethod('manual'); }
+      try { 
+          // EXTRACT EXIF DATE BEFORE RESIZING
+          const date = await getExifDate(f);
+          const b64 = await resizeImage(f); 
+          const r = await analyzeImage(b64); 
+          // PASS EXIF DATE
+          mapAnalysisToDraft(r, b64, undefined, undefined, date); 
+          setInputMethod('manual'); 
+      }
       catch { alert("Error imagen"); } finally { setAiProcessing(false); }
   };
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
