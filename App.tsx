@@ -7,12 +7,37 @@ import Navbar from './components/Navbar';
 import EventForm from './components/EventForm';
 import AudioRecorder from './components/AudioRecorder';
 import AIQueryView from './components/AIQueryView';
+import MigrationPanel from './components/MigrationPanel';
 
 const App: React.FC = () => {
+  // --- Environment Variables Check ---
+  // Safely access import.meta.env to avoid crashes if it's undefined
+  const meta = import.meta as any;
+  const envVars = meta.env || {};
+  const envSupabaseUrl = envVars.VITE_SUPABASE_URL;
+  const envSupabaseKey = envVars.VITE_SUPABASE_KEY;
+  const isEnvConfigured = !!(envSupabaseUrl && envSupabaseKey);
+
   // --- State ---
   const [view, setView] = useState<'home' | 'add' | 'settings' | 'consult'>('home');
   const [events, setEvents] = useState<DogEvent[]>([]);
-  const [settings, setSettings] = useState<SupabaseSettings>({ supabaseUrl: '', supabaseKey: '' });
+  
+  // Initialize settings with priority: Env Vars > LocalStorage > Empty
+  const [settings, setSettings] = useState<SupabaseSettings>(() => {
+      if (isEnvConfigured) {
+          return { supabaseUrl: envSupabaseUrl, supabaseKey: envSupabaseKey };
+      }
+      const savedSettings = localStorage.getItem('doglog_settings');
+      if (savedSettings) {
+          try {
+              return JSON.parse(savedSettings);
+          } catch (e) {
+              console.error("Error loading settings", e);
+          }
+      }
+      return { supabaseUrl: '', supabaseKey: '' };
+  });
+
   const [isLoading, setIsLoading] = useState(false);
   
   // Settings Validation State
@@ -27,6 +52,21 @@ const App: React.FC = () => {
   const [inputMethod, setInputMethod] = useState<'menu' | 'voice' | 'chat' | 'manual'>('menu');
   const [chatInput, setChatInput] = useState('');
 
+  // --- Filter State ---
+  const [showFilters, setShowFilters] = useState(false);
+  const [visibleDays, setVisibleDays] = useState(3); // Default view: last 3 days
+  const [filterConfig, setFilterConfig] = useState<{
+    startDate: string;
+    endDate: string;
+    recordType: RecordType | '';
+    searchTitle: string;
+  }>({
+    startDate: '',
+    endDate: '',
+    recordType: '',
+    searchTitle: ''
+  });
+
   // --- Effects ---
   useEffect(() => {
     const savedEvents = localStorage.getItem('doglog_events');
@@ -37,15 +77,7 @@ const App: React.FC = () => {
             console.error("Error loading events", e);
         }
     }
-
-    const savedSettings = localStorage.getItem('doglog_settings');
-    if (savedSettings) {
-        try {
-            setSettings(JSON.parse(savedSettings));
-        } catch (e) {
-            console.error("Error loading settings", e);
-        }
-    }
+    // Note: We no longer load settings here because we do it in useState initialization
   }, []);
 
   useEffect(() => {
@@ -63,6 +95,8 @@ const App: React.FC = () => {
 
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isEnvConfigured) return; // Prevent saving if managed by env
+
     // Sanitize inputs
     const cleanUrl = settings.supabaseUrl.trim().replace(/\/$/, ""); // Remove trailing slash
     const cleanKey = settings.supabaseKey.trim();
@@ -159,72 +193,116 @@ const App: React.FC = () => {
       return `${hours}:${minutes}`;
   };
 
-  // Helper: Extract EXIF Date from File object (JPEG)
+  // --- ROBUST EXIF PARSER ---
+  // Navigates through IFD0 -> Exif SubIFD to find DateTimeOriginal (0x9003)
   const getExifDate = (file: File): Promise<Date | null> => {
     return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            try {
-                const view = new DataView(e.target?.result as ArrayBuffer);
-                // Check for JPEG SOI marker
-                if (view.getUint16(0, false) !== 0xFFD8) return resolve(null);
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const view = new DataView(e.target?.result as ArrayBuffer);
+          if (view.getUint16(0, false) !== 0xFFD8) return resolve(null); // Not JPEG
 
-                const length = view.byteLength;
-                let offset = 2;
+          const length = view.byteLength;
+          let offset = 2;
 
-                while (offset < length) {
-                    if (offset + 4 > length) break;
-                    const marker = view.getUint16(offset, false);
-                    offset += 2;
+          while (offset < length) {
+            // Look for APP1 (Exif)
+            if (view.getUint16(offset, false) === 0xFFE1) {
+               // Check "Exif" string signature
+               if (view.getUint32(offset + 4, false) !== 0x45786966) return resolve(null);
 
-                    if (marker === 0xFFE1) {
-                        // Check for "Exif" string
-                        if (view.getUint32(offset + 4, false) !== 0x45786966) return resolve(null);
+               const littleEndian = view.getUint16(offset + 10, false) === 0x4949;
+               const tiffStart = offset + 10;
 
-                        const littleEndian = view.getUint16(offset + 10, false) === 0x4949;
-                        
-                        // TIFF Header starts at offset + 10
-                        let tiffStart = offset + 10;
-                        const ifdOffset = view.getUint32(tiffStart + 4, littleEndian);
-                        let ifdStart = tiffStart + ifdOffset;
-                        
-                        const entries = view.getUint16(ifdStart, littleEndian);
-                        
-                        for (let i = 0; i < entries; i++) {
-                            const entryOffset = ifdStart + 2 + (i * 12);
-                            const tag = view.getUint16(entryOffset, littleEndian);
-                            
-                            // Tag 0x9003 is DateTimeOriginal
-                            if (tag === 0x9003) {
-                                const valueOffset = view.getUint32(entryOffset + 8, littleEndian);
-                                const dateOffset = tiffStart + valueOffset;
-                                
-                                let dateString = "";
-                                for (let j = 0; j < 19; j++) {
-                                    dateString += String.fromCharCode(view.getUint8(dateOffset + j));
-                                }
-                                
-                                // Format: "YYYY:MM:DD HH:MM:SS"
-                                const [d, t] = dateString.split(" ");
-                                const [year, month, day] = d.split(":");
-                                const [hour, min, sec] = t.split(":");
-                                
-                                const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(min), Number(sec));
-                                resolve(date);
-                                return;
-                            }
-                        }
-                    } 
-                    else if ((marker & 0xFF00) !== 0xFF00) break;
-                    else offset += view.getUint16(offset, false);
-                }
-            } catch (err) {
-                console.warn("EXIF Parse error", err);
+               // Helper to read string tags
+               const readTagValue = (tagOffset: number) => {
+                   const type = view.getUint16(tagOffset + 2, littleEndian);
+                   const count = view.getUint32(tagOffset + 4, littleEndian);
+                   if (type === 2) { // ASCII String
+                       const valOffset = view.getUint32(tagOffset + 8, littleEndian) + tiffStart;
+                       let str = '';
+                       // count-1 because strings are null-terminated in EXIF
+                       for(let i=0; i<count-1; i++) str += String.fromCharCode(view.getUint8(valOffset + i));
+                       return str;
+                   }
+                   return null;
+               };
+
+               // Read IFD0 (Main Image)
+               const ifdOffset = view.getUint32(tiffStart + 4, littleEndian);
+               let dirStart = tiffStart + ifdOffset;
+               let entries = view.getUint16(dirStart, littleEndian);
+
+               let dateTime = null;
+               let exifSubIfdOffset = 0;
+
+               // Scan IFD0 tags
+               for (let i = 0; i < entries; i++) {
+                   const entryOffset = dirStart + 2 + (i * 12);
+                   const tag = view.getUint16(entryOffset, littleEndian);
+                   
+                   // 0x0132 is "DateTime" (Modification Date) - Fallback
+                   if (tag === 0x0132) {
+                       dateTime = readTagValue(entryOffset);
+                   }
+                   // 0x8769 is "Exif Offset" - Pointer to SubIFD where Original Date lives
+                   if (tag === 0x8769) {
+                       exifSubIfdOffset = view.getUint32(entryOffset + 8, littleEndian);
+                   }
+               }
+
+               // If we found the Exif SubIFD, go there (Priority)
+               if (exifSubIfdOffset > 0) {
+                   dirStart = tiffStart + exifSubIfdOffset;
+                   entries = view.getUint16(dirStart, littleEndian);
+                   for (let i = 0; i < entries; i++) {
+                       const entryOffset = dirStart + 2 + (i * 12);
+                       const tag = view.getUint16(entryOffset, littleEndian);
+                       
+                       // 0x9003: DateTimeOriginal (When photo was taken)
+                       // 0x9004: CreateDate (Digitized)
+                       if (tag === 0x9003 || tag === 0x9004) { 
+                           const dt = readTagValue(entryOffset);
+                           if (dt) { 
+                               dateTime = dt; 
+                               break; // Found strict capture time, stop searching
+                           }
+                       }
+                   }
+               }
+
+               if (dateTime) {
+                   // Parse format: "YYYY:MM:DD HH:MM:SS"
+                   const parts = dateTime.split(" ");
+                   if (parts.length >= 2) {
+                       const [d, t] = parts;
+                       const [yyyy, mm, dd] = d.split(":");
+                       const [hh, min, ss] = t.split(":");
+                       const date = new Date(
+                           parseInt(yyyy), parseInt(mm)-1, parseInt(dd), 
+                           parseInt(hh), parseInt(min), parseInt(ss)
+                       );
+                       if (!isNaN(date.getTime())) {
+                           resolve(date);
+                           return;
+                       }
+                   }
+               }
+               resolve(null);
+               return;
             }
-            resolve(null);
-        };
-        // Read first 64KB is usually enough for EXIF
-        reader.readAsArrayBuffer(file.slice(0, 64 * 1024));
+            // Move to next marker
+            offset += 2 + view.getUint16(offset + 2, false);
+          }
+        } catch (e) {
+          console.warn("EXIF Parsing error", e);
+          resolve(null);
+        }
+        resolve(null);
+      };
+      // Read 128KB to ensure we catch headers even in files with large thumbnails
+      reader.readAsArrayBuffer(file.slice(0, 128 * 1024)); 
     });
   };
 
@@ -280,6 +358,7 @@ const App: React.FC = () => {
           const hh = String(overrideDate.getHours()).padStart(2, '0');
           const min = String(overrideDate.getMinutes()).padStart(2, '0');
           finalTime = `${hh}:${min}`;
+          console.log(`Using EXIF Date: ${finalDate} ${finalTime}`);
       }
 
       if (!finalDate) finalDate = new Date().toISOString().split('T')[0];
@@ -361,7 +440,11 @@ const App: React.FC = () => {
               // Try to extract EXIF before resizing (resizing strips metadata)
               try {
                  exifDate = await getExifDate(file);
-                 if (exifDate) console.log("EXIF Date Found:", exifDate);
+                 if (exifDate) {
+                     console.log("EXIF Date Found Successfully:", exifDate);
+                 } else {
+                     console.log("No EXIF Date found in image.");
+                 }
               } catch (e) {
                  console.log("Could not read EXIF", e);
               }
@@ -464,74 +547,208 @@ create policy "Fotos Publicas" on storage.objects
 
   // --- Views ---
 
-  const renderHome = () => (
+  const renderHome = () => {
+    // 1. Determine which events to show
+    let filteredEvents = events;
+    const hasActiveFilters = !!(filterConfig.startDate || filterConfig.endDate || filterConfig.recordType || filterConfig.searchTitle);
+
+    if (hasActiveFilters) {
+        // --- Custom Filter Logic ---
+        filteredEvents = events.filter(e => {
+            // Date Range
+            if (filterConfig.startDate && e.date < filterConfig.startDate) return false;
+            if (filterConfig.endDate && e.date > filterConfig.endDate) return false;
+            
+            // Record Type
+            if (filterConfig.recordType && e.recordType !== filterConfig.recordType) return false;
+
+            // Title Search (Case insensitive)
+            if (filterConfig.searchTitle) {
+                const term = filterConfig.searchTitle.toLowerCase();
+                if (!e.title.toLowerCase().includes(term) && !e.description?.toLowerCase().includes(term)) return false;
+            }
+
+            return true;
+        });
+    } else {
+        // --- Default View Logic (Incrementally by days) ---
+        const cutoffDate = new Date();
+        // Calculate cutoff based on visibleDays state
+        cutoffDate.setDate(cutoffDate.getDate() - visibleDays);
+        const cutoffStr = cutoffDate.toISOString().split('T')[0];
+
+        // Since date is YYYY-MM-DD string, simple comparison works
+        filteredEvents = events.filter(e => e.date >= cutoffStr);
+    }
+
+    // Check if there are more events to load hidden by the date filter
+    const hasHiddenEvents = !hasActiveFilters && events.length > filteredEvents.length;
+
+    return (
     <div className="flex flex-col h-full bg-slate-50">
         <header className="bg-white px-6 py-4 border-b border-slate-100 sticky top-0 z-10">
             <div className="flex justify-between items-center">
               <div>
                 <h1 className="text-2xl font-bold text-slate-800">DogLog 🐾</h1>
                 <p className="text-sm text-slate-500 flex items-center gap-1">
-                  {settings.supabaseUrl ? <span className="w-2 h-2 bg-green-500 rounded-full"></span> : <span className="w-2 h-2 bg-gray-300 rounded-full"></span>}
+                  {settings.supabaseUrl ? <span className="w-2 h-2 bg-green-50 rounded-full"></span> : <span className="w-2 h-2 bg-gray-300 rounded-full"></span>}
                   {settings.supabaseUrl ? 'Conectado a Supabase' : 'Modo Local'}
                 </p>
               </div>
+              <button 
+                onClick={() => setShowFilters(!showFilters)}
+                className={`p-2 rounded-full transition-colors ${showFilters ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                title="Filtrar eventos"
+              >
+                <Icons.Filter className="w-5 h-5" />
+              </button>
             </div>
+            
+            {/* Filter Panel */}
+            {showFilters && (
+                <div className="mt-4 pt-4 border-t border-slate-100 animate-fade-in-up">
+                    <div className="grid grid-cols-2 gap-3 mb-3">
+                         <div>
+                            <label className="text-xs font-semibold text-slate-500 mb-1 block">Desde</label>
+                            <input 
+                                type="date" 
+                                value={filterConfig.startDate}
+                                onChange={(e) => setFilterConfig({...filterConfig, startDate: e.target.value})}
+                                className="w-full text-xs p-2 rounded-lg bg-slate-50 border border-slate-200 outline-none focus:border-blue-300"
+                            />
+                         </div>
+                         <div>
+                            <label className="text-xs font-semibold text-slate-500 mb-1 block">Hasta</label>
+                            <input 
+                                type="date" 
+                                value={filterConfig.endDate}
+                                onChange={(e) => setFilterConfig({...filterConfig, endDate: e.target.value})}
+                                className="w-full text-xs p-2 rounded-lg bg-slate-50 border border-slate-200 outline-none focus:border-blue-300"
+                            />
+                         </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 mb-3">
+                        <div>
+                             <label className="text-xs font-semibold text-slate-500 mb-1 block">Tipo</label>
+                             <select
+                                value={filterConfig.recordType}
+                                onChange={(e) => setFilterConfig({...filterConfig, recordType: e.target.value as RecordType})}
+                                className="w-full text-xs p-2 rounded-lg bg-slate-50 border border-slate-200 outline-none focus:border-blue-300"
+                             >
+                                <option value="">Todos</option>
+                                {Object.values(RecordType).map(t => <option key={t} value={t}>{t}</option>)}
+                             </select>
+                        </div>
+                        <div>
+                             <label className="text-xs font-semibold text-slate-500 mb-1 block">Buscar Texto</label>
+                             <input 
+                                type="text"
+                                placeholder="Título o descripción..."
+                                value={filterConfig.searchTitle}
+                                onChange={(e) => setFilterConfig({...filterConfig, searchTitle: e.target.value})}
+                                className="w-full text-xs p-2 rounded-lg bg-slate-50 border border-slate-200 outline-none focus:border-blue-300"
+                             />
+                        </div>
+                    </div>
+                    <div className="flex justify-between items-center">
+                         <span className="text-xs text-slate-400 font-medium">{filteredEvents.length} resultados</span>
+                         <button 
+                            onClick={() => {
+                                setFilterConfig({ startDate: '', endDate: '', recordType: '', searchTitle: '' });
+                                setVisibleDays(3); // Reset to last 3 days
+                            }}
+                            className="text-xs text-blue-600 font-medium hover:underline"
+                         >
+                            Limpiar Filtros
+                         </button>
+                    </div>
+                </div>
+            )}
         </header>
         <div className="flex-1 overflow-y-auto p-4 pb-28 space-y-4 no-scrollbar">
-            {events.length === 0 ? (
+            {filteredEvents.length === 0 ? (
                 <div className="text-center text-slate-400 mt-20">
                     <div className="w-16 h-16 bg-slate-200 rounded-full flex items-center justify-center mx-auto mb-4">
                         <Icons.Home className="w-8 h-8 text-slate-400" />
                     </div>
-                    <p>No hay eventos registrados.</p>
-                    <p className="text-sm mt-2">Configura Supabase en Ajustes y pulsa +</p>
+                    <p>{events.length === 0 ? "No hay eventos registrados." : "No hay resultados recientes."}</p>
+                    {events.length === 0 ? (
+                        <p className="text-sm mt-2">Configura Supabase en Ajustes y pulsa +</p>
+                    ) : !hasActiveFilters && (
+                        <button 
+                            onClick={() => setVisibleDays(prev => prev + 3)}
+                            className="mt-4 text-blue-600 font-semibold text-sm hover:underline"
+                        >
+                            Ver días anteriores
+                        </button>
+                    )}
                 </div>
             ) : (
-                events.map(event => (
-                    <div key={event.id} onClick={() => handleEditEvent(event)} className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 relative overflow-hidden active:scale-[0.98] transition-transform cursor-pointer">
-                        <div className="absolute top-0 right-0 bg-slate-100 px-3 py-1 rounded-bl-xl text-xs font-bold text-slate-600">
-                            {event.recordType}
+                <>
+                    {!hasActiveFilters && (
+                        <div className="mb-2 flex items-center justify-between text-xs text-slate-400 px-1">
+                            <span>Mostrando últimos {visibleDays} días</span>
                         </div>
-
-                        <div className="flex justify-between items-start mb-2 pr-16">
-                            <h3 className="font-bold text-slate-800 text-lg leading-tight">{event.title}</h3>
-                        </div>
-                        
-                        <div className="flex flex-wrap gap-2 mb-3">
-                            {event.healthStatus && (
-                                <span className={`text-xs font-medium px-2 py-1 rounded-full border ${HEALTH_STATUS_COLORS[event.healthStatus]}`}>
-                                    {event.healthStatus}
-                                </span>
-                            )}
-                            <span className="text-xs font-medium px-2 py-1 rounded-full border bg-slate-50 text-slate-500 border-slate-100">
-                                {event.date} · {event.time}
-                            </span>
-                            {event.synced ? (
-                              <span className="text-green-600 flex items-center gap-1 text-xs"><Icons.Check className="w-3 h-3"/> Nube</span>
-                            ) : (
-                              <span className="text-red-400 flex items-center gap-1 text-xs"><Icons.AlertTriangle className="w-3 h-3"/> Local</span>
-                            )}
-                        </div>
-                        
-                        {event.photoBase64 && (
-                            <div className="mb-3 rounded-lg overflow-hidden h-48 w-full bg-slate-100">
-                                <img src={event.photoBase64} alt="Evento" className="w-full h-full object-cover" />
+                    )}
+                    
+                    {filteredEvents.map(event => (
+                        <div key={event.id} onClick={() => handleEditEvent(event)} className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 relative overflow-hidden active:scale-[0.98] transition-transform cursor-pointer">
+                            <div className="absolute top-0 right-0 bg-slate-100 px-3 py-1 rounded-bl-xl text-xs font-bold text-slate-600">
+                                {event.recordType}
                             </div>
-                        )}
 
-                        <p className="text-slate-600 text-sm line-clamp-3 whitespace-pre-wrap">{event.description}</p>
-                        
-                        {event.weight && (
-                             <div className="mt-3 pt-3 border-t border-slate-50 flex gap-4 text-xs font-semibold text-slate-700">
-                                <span>⚖️ {event.weight} kg</span>
-                             </div>
-                        )}
-                    </div>
-                ))
+                            <div className="flex justify-between items-start mb-2 pr-16">
+                                <h3 className="font-bold text-slate-800 text-lg leading-tight">{event.title}</h3>
+                            </div>
+                            
+                            <div className="flex flex-wrap gap-2 mb-3">
+                                {event.healthStatus && (
+                                    <span className={`text-xs font-medium px-2 py-1 rounded-full border ${HEALTH_STATUS_COLORS[event.healthStatus]}`}>
+                                        {event.healthStatus}
+                                    </span>
+                                )}
+                                <span className="text-xs font-medium px-2 py-1 rounded-full border bg-slate-50 text-slate-500 border-slate-100">
+                                    {event.date} · {event.time}
+                                </span>
+                                {event.synced ? (
+                                <span className="text-green-600 flex items-center gap-1 text-xs"><Icons.Check className="w-3 h-3"/> Nube</span>
+                                ) : (
+                                <span className="text-red-400 flex items-center gap-1 text-xs"><Icons.AlertTriangle className="w-3 h-3"/> Local</span>
+                                )}
+                            </div>
+                            
+                            {event.photoBase64 && (
+                                <div className="mb-3 rounded-lg overflow-hidden h-48 w-full bg-slate-100">
+                                    <img src={event.photoBase64} alt="Evento" className="w-full h-full object-cover" />
+                                </div>
+                            )}
+
+                            <p className="text-slate-600 text-sm line-clamp-3 whitespace-pre-wrap">{event.description}</p>
+                            
+                            {event.weight && (
+                                <div className="mt-3 pt-3 border-t border-slate-50 flex gap-4 text-xs font-semibold text-slate-700">
+                                    <span>⚖️ {event.weight} kg</span>
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                    
+                    {/* Incremental Load Button */}
+                    {!hasActiveFilters && hasHiddenEvents && (
+                        <div className="pt-4 pb-8 text-center">
+                            <button 
+                                onClick={() => setVisibleDays(prev => prev + 3)}
+                                className="px-6 py-2.5 bg-white border border-slate-200 shadow-sm rounded-full text-sm font-semibold text-slate-600 active:scale-95 transition-all hover:bg-slate-50"
+                            >
+                                Cargar 3 días anteriores...
+                            </button>
+                        </div>
+                    )}
+                </>
             )}
         </div>
     </div>
-  );
+  )};
 
   const renderAdd = () => {
     // Logic for showing loading screen ONLY when analyzing photo/file
@@ -633,15 +850,37 @@ create policy "Fotos Publicas" on storage.objects
         <div className="flex-1 overflow-y-auto px-6 pt-6 pb-32 no-scrollbar">
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 mb-6">
                 <p className="text-sm text-slate-600 mb-4">Configura tu proyecto de Supabase (Base de Datos PostgreSQL).</p>
+                
+                {isEnvConfigured && (
+                    <div className="mb-4 bg-blue-50 text-blue-800 text-xs p-3 rounded-lg border border-blue-100 flex items-center gap-2">
+                        <Icons.Check className="w-4 h-4" />
+                        <span>Configurado automáticamente mediante variables de entorno.</span>
+                    </div>
+                )}
+
                 <form onSubmit={handleSaveSettings} className="space-y-5">
                     <div>
                         <label className="block text-sm font-bold text-slate-700 mb-1">Project URL</label>
-                        <input type="text" className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white outline-none" placeholder="https://xyz.supabase.co" value={settings.supabaseUrl} onChange={(e) => setSettings({...settings, supabaseUrl: e.target.value})} />
-                        <p className="text-xs text-slate-400 mt-1">Debe ser del formato: https://&lt;tu-proyecto&gt;.supabase.co</p>
+                        <input 
+                            type="text" 
+                            className={`w-full p-3 rounded-xl border border-slate-200 outline-none ${isEnvConfigured ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : 'bg-slate-50 focus:bg-white'}`}
+                            placeholder="https://xyz.supabase.co" 
+                            value={settings.supabaseUrl} 
+                            onChange={(e) => setSettings({...settings, supabaseUrl: e.target.value})} 
+                            disabled={isEnvConfigured}
+                        />
+                        {!isEnvConfigured && <p className="text-xs text-slate-400 mt-1">Debe ser del formato: https://&lt;tu-proyecto&gt;.supabase.co</p>}
                     </div>
                     <div>
                         <label className="block text-sm font-bold text-slate-700 mb-1">API Key (anon/public)</label>
-                        <input type="password" className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white outline-none" placeholder="eyJ..." value={settings.supabaseKey} onChange={(e) => setSettings({...settings, supabaseKey: e.target.value})} />
+                        <input 
+                            type="password" 
+                            className={`w-full p-3 rounded-xl border border-slate-200 outline-none ${isEnvConfigured ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : 'bg-slate-50 focus:bg-white'}`}
+                            placeholder="eyJ..." 
+                            value={settings.supabaseKey} 
+                            onChange={(e) => setSettings({...settings, supabaseKey: e.target.value})} 
+                            disabled={isEnvConfigured}
+                        />
                     </div>
 
                     <div className="pt-2">
@@ -696,10 +935,16 @@ create policy "Fotos Publicas" on storage.objects
                         )}
                     </div>
 
-                    <button type="submit" className="w-full bg-slate-800 text-white py-3.5 rounded-xl font-semibold mt-4 shadow-lg shadow-slate-200">
-                        Guardar Configuración
-                    </button>
+                    {!isEnvConfigured && (
+                        <button type="submit" className="w-full bg-slate-800 text-white py-3.5 rounded-xl font-semibold mt-4 shadow-lg shadow-slate-200">
+                            Guardar Configuración
+                        </button>
+                    )}
                 </form>
+
+                {/* --- MIGRATION SECTION --- */}
+                <MigrationPanel supabaseSettings={settings} />
+
             </div>
         </div>
     </div>
