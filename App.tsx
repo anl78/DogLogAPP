@@ -264,9 +264,9 @@ const App: React.FC = () => {
         // Inject Relations
         eventToSave.petId = currentPet.id;
         
-        // CRITICAL FIX: Only assign userId if this is a NEW event.
-        // If editing, preserve the original owner (handled by DB, or keep existing).
-        if (!event.id && session?.user?.id) {
+        // Fix: If userId is missing (new event), assign current user.
+        // We don't check !event.id because the Form generates a UUID even for new events.
+        if (!eventToSave.userId && session?.user?.id) {
             eventToSave.userId = session.user.id;
         }
 
@@ -475,8 +475,9 @@ const App: React.FC = () => {
   };
   
   const calculateCanEdit = (event?: Partial<DogEvent>) => {
-      if (!event || !event.id) return permissions.can_create; // New event
+      if (!event || !event.id) return permissions.can_create; // New event logic delegated to can_create
       if (permissions.can_edit === 'all') return true;
+      // If event.userId is missing (legacy), assume can't edit unless admin, OR fix data.
       if (permissions.can_edit === 'own') return event.userId === session?.user?.id;
       return false;
   };
