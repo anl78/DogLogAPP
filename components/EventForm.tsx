@@ -6,9 +6,10 @@ interface EventFormProps {
   initialData?: Partial<DogEvent>;
   onSubmit: (event: DogEvent) => void;
   onCancel: () => void;
+  onDelete?: () => void;
 }
 
-const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel }) => {
+const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel, onDelete }) => {
   // Helper strictly for 24h format HH:mm (HTML input time requires this)
   const getCurrentTime = () => {
       const now = new Date();
@@ -26,11 +27,13 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel }
     description: '',
     weight: undefined,
     photoBase64: undefined,
+    photoUrl: undefined,
     fileBase64: undefined,
     ...initialData
   });
   
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
     if (initialData) {
@@ -158,6 +161,7 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel }
                 description: formData.description || "", // Allow empty string
                 weight: formData.weight !== undefined ? formData.weight : undefined,
                 photoBase64: formData.photoBase64,
+                photoUrl: formData.photoUrl,
                 fileBase64: formData.fileBase64,
                 fileName: formData.fileName,
                 synced: false
@@ -171,6 +175,8 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel }
         }
     }, 50);
   };
+
+  const previewImage = formData.photoBase64 || formData.photoUrl;
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5 pb-24 px-1">
@@ -279,15 +285,15 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel }
         <div>
             <label className="flex items-center space-x-2 p-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 text-slate-600 active:bg-slate-100 cursor-pointer">
                 <Icons.Camera className="w-5 h-5" />
-                <span className="text-sm">{formData.photoBase64 ? 'Cambiar Foto' : 'Adjuntar Foto'}</span>
+                <span className="text-sm">{previewImage ? 'Cambiar Foto' : 'Adjuntar Foto'}</span>
                 <input type="file" accept="image/*" onChange={(e) => handleFileChange(e, 'photo')} className="hidden" />
             </label>
-            {formData.photoBase64 && (
+            {previewImage && (
                 <div className="mt-2 relative w-24 h-24 rounded-lg overflow-hidden border border-slate-200">
-                    <img src={formData.photoBase64} alt="Preview" className="w-full h-full object-cover" />
+                    <img src={previewImage} alt="Preview" className="w-full h-full object-cover" />
                     <button 
                         type="button"
-                        onClick={() => setFormData(prev => ({...prev, photoBase64: undefined}))}
+                        onClick={() => setFormData(prev => ({...prev, photoBase64: undefined, photoUrl: undefined}))}
                         className="absolute top-0 right-0 bg-black/50 text-white p-1 rounded-bl-lg"
                     >
                         <Icons.Trash className="w-3 h-3" />
@@ -307,32 +313,72 @@ const EventForm: React.FC<EventFormProps> = ({ initialData, onSubmit, onCancel }
       </div>
 
       {/* Buttons */}
-      <div className="pt-4 flex space-x-3">
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={isSubmitting}
-          className="flex-1 py-3.5 bg-slate-100 text-slate-700 font-semibold rounded-xl active:scale-[0.98] transition-transform disabled:opacity-50"
-        >
-          Cancelar
-        </button>
-        <button
-          type="submit"
-          disabled={isSubmitting}
-          className="flex-1 py-3.5 bg-blue-600 text-white font-semibold rounded-xl shadow-lg shadow-blue-200 active:scale-[0.98] transition-transform flex justify-center items-center space-x-2 disabled:opacity-70"
-        >
-          {isSubmitting ? (
-             <span className="flex items-center gap-2">
-               <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-               Procesando...
-             </span>
-          ) : (
-             <>
-               <Icons.Check className="w-5 h-5" />
-               <span>Guardar</span>
-             </>
-          )}
-        </button>
+      <div className="pt-4 flex flex-col gap-3">
+        <div className="flex space-x-3">
+            <button
+            type="button"
+            onClick={onCancel}
+            disabled={isSubmitting}
+            className="flex-1 py-3.5 bg-slate-100 text-slate-700 font-semibold rounded-xl active:scale-[0.98] transition-transform disabled:opacity-50"
+            >
+            Cancelar
+            </button>
+            <button
+            type="submit"
+            disabled={isSubmitting}
+            className="flex-1 py-3.5 bg-blue-600 text-white font-semibold rounded-xl shadow-lg shadow-blue-200 active:scale-[0.98] transition-transform flex justify-center items-center space-x-2 disabled:opacity-70"
+            >
+            {isSubmitting ? (
+                <span className="flex items-center gap-2">
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                Procesando...
+                </span>
+            ) : (
+                <>
+                <Icons.Check className="w-5 h-5" />
+                <span>Guardar</span>
+                </>
+            )}
+            </button>
+        </div>
+        
+        {/* DELETE BUTTON with Visual Confirmation */}
+        {initialData?.id && onDelete && (
+             <div className="mt-4 pt-4 border-t border-slate-100">
+                {!showDeleteConfirm ? (
+                    <button
+                        type="button"
+                        onClick={() => setShowDeleteConfirm(true)}
+                        disabled={isSubmitting}
+                        className="w-full py-3 bg-red-50 text-red-600 border border-red-100 font-semibold rounded-xl active:scale-[0.98] transition-transform flex justify-center items-center gap-2"
+                    >
+                        <Icons.Trash className="w-5 h-5" />
+                        <span>Eliminar Evento</span>
+                    </button>
+                ) : (
+                    <div className="bg-red-50 p-3 rounded-xl border border-red-100 animate-fade-in-up">
+                        <p className="text-red-800 text-sm font-bold text-center mb-3">¿Eliminar este evento y su foto?</p>
+                        <div className="flex gap-3">
+                            <button
+                                type="button"
+                                onClick={() => setShowDeleteConfirm(false)}
+                                className="flex-1 py-2 bg-white text-slate-600 border border-slate-200 rounded-lg text-sm font-semibold"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                type="button"
+                                onClick={onDelete}
+                                disabled={isSubmitting}
+                                className="flex-1 py-2 bg-red-600 text-white rounded-lg text-sm font-semibold shadow-sm active:scale-95 transition-transform"
+                            >
+                                Sí, Eliminar
+                            </button>
+                        </div>
+                    </div>
+                )}
+             </div>
+        )}
       </div>
     </form>
   );

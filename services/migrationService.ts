@@ -1,6 +1,6 @@
-import { DogEvent, NotionSettings, SupabaseSettings, RecordType, HealthStatus } from '../types';
+import { DogEvent, SupabaseSettings, RecordType, HealthStatus } from '../types';
 import { saveEventToSupabase } from './supabaseService';
-import { analyzeImage } from './geminiService';
+import { createClient } from '@supabase/supabase-js';
 
 // Proxy strategy same as notionService
 const PROXIES = [
@@ -8,14 +8,12 @@ const PROXIES = [
   "https://thingproxy.freeboard.io/fetch/"
 ];
 
-// Robust UUID Generator (Polyfill) to prevent crashes on non-secure contexts
+// Robust UUID Generator (Polyfill)
 const generateUUID = () => {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
         try {
             return crypto.randomUUID();
-        } catch (e) {
-            // Fallback if crypto exists but randomUUID fails
-        }
+        } catch (e) {}
     }
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
         const r = Math.random() * 16 | 0;
@@ -26,13 +24,11 @@ const generateUUID = () => {
 
 async function fetchWithFallback(targetUrl: string, options: RequestInit): Promise<Response> {
   let lastError: any;
-  // 15 seconds timeout
   const TIMEOUT_MS = 15000;
 
   for (const proxyBase of PROXIES) {
     try {
       const url = proxyBase + encodeURIComponent(targetUrl);
-      
       const controller = new AbortController();
       const id = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -48,7 +44,6 @@ async function fetchWithFallback(targetUrl: string, options: RequestInit): Promi
   throw lastError || new Error("Error de conexión con Notion (Proxies fallaron o Timeout)");
 }
 
-// Convert URL to Base64 (needed for Gemini and Supabase upload)
 async function urlToBase64(url: string): Promise<string> {
     try {
         const response = await fetch(url); 
@@ -60,7 +55,6 @@ async function urlToBase64(url: string): Promise<string> {
             reader.readAsDataURL(blob);
         });
     } catch (e) {
-        // Fallback with proxy if direct fetch fails due to CORS
         try {
             const response = await fetchWithFallback(url, { method: 'GET' });
             const blob = await response.blob();
@@ -77,36 +71,163 @@ async function urlToBase64(url: string): Promise<string> {
     }
 }
 
+// --- NEW MASS DELETE FUNCTION ---
+export const deleteMigratedEvents = async (
+    supabaseSettings: SupabaseSettings,
+    filters: { startDate?: string, endDate?: string },
+    onLog: (msg: string) => void
+): Promise<void> => {
+    const log = (msg: string) => onLog(`[${new Date().toLocaleTimeString()}] ${msg}`);
+    
+    // Create direct client
+    const client = createClient(supabaseSettings.supabaseUrl, supabaseSettings.supabaseKey);
+
+    log("🔍 Buscando eventos para borrar...");
+
+    // Build Query
+    let query = client.from('events').select('id, photo_url');
+    if (filters.startDate) query = query.gte('date', filters.startDate);
+    if (filters.endDate) query = query.lte('date', filters.endDate);
+
+    const { data: events, error } = await query;
+
+    if (error) throw new Error(`Error buscando eventos: ${error.message}`);
+    if (!events || events.length === 0) {
+        log("⚠️ No se encontraron eventos en ese rango.");
+        return;
+    }
+
+    log(`🗑️ Encontrados ${events.length} registros. Procesando borrado...`);
+
+    // 1. Collect all photo files to delete
+    const filesToDelete: string[] = [];
+    events.forEach((ev: any) => {
+        if (ev.photo_url) {
+            const parts = ev.photo_url.split('/');
+            const fileName = parts[parts.length - 1];
+            if (fileName) filesToDelete.push(fileName);
+        }
+    });
+
+    // 2. Delete from Storage (in batches of 50 just in case)
+    if (filesToDelete.length > 0) {
+        log(`📸 Borrando ${filesToDelete.length} fotos del almacenamiento...`);
+        // Supabase storage remove accepts array of strings
+        const { error: storageError } = await client.storage
+            .from('dog_photos')
+            .remove(filesToDelete);
+        
+        if (storageError) log(`⚠️ Error borrando fotos: ${storageError.message}`);
+        else log("✅ Fotos eliminadas.");
+    }
+
+    // 3. Delete Rows
+    log("🗄️ Borrando filas de la base de datos...");
+    const idsToDelete = events.map((ev: any) => ev.id);
+    const { error: deleteError } = await client
+        .from('events')
+        .delete()
+        .in('id', idsToDelete);
+
+    if (deleteError) throw new Error(`Error borrando filas: ${deleteError.message}`);
+
+    log("✅ Base de datos limpiada con éxito.");
+};
+
+
+// --- ORPHAN RESCUE FUNCTION ---
+export const assignOrphanEvents = async (
+    settings: SupabaseSettings,
+    targetUserId: string,
+    targetPetId: string,
+    onLog: (msg: string) => void
+): Promise<void> => {
+    const log = (msg: string) => onLog(`[${new Date().toLocaleTimeString()}] ${msg}`);
+    const client = createClient(settings.supabaseUrl, settings.supabaseKey);
+
+    log(`🔍 Buscando eventos huérfanos (sin usuario o mascota)...`);
+
+    // Find orphans (rows where user_id IS NULL OR pet_id IS NULL)
+    // Note: Supabase JS syntax for OR filters is specific
+    const { data: orphans, error: searchError } = await client
+        .from('events')
+        .select('id')
+        .or('user_id.is.null,pet_id.is.null');
+
+    if (searchError) throw new Error(`Error buscando huérfanos: ${searchError.message}`);
+    
+    if (!orphans || orphans.length === 0) {
+        log("✅ No hay eventos huérfanos. Todo está asignado.");
+        return;
+    }
+
+    log(`⚠️ Encontrados ${orphans.length} eventos sin asignar.`);
+    log(`🔄 Asignando a Usuario: ...${targetUserId.slice(-5)} y Mascota ID: ...${targetPetId.slice(-5)}...`);
+
+    // Update matching rows
+    const { error: updateError } = await client
+        .from('events')
+        .update({ 
+            user_id: targetUserId, 
+            pet_id: targetPetId 
+        })
+        .or('user_id.is.null,pet_id.is.null');
+
+    if (updateError) throw new Error(`Error actualizando: ${updateError.message}`);
+
+    log(`🎉 ¡Éxito! Se han rescatado y asignado ${orphans.length} eventos.`);
+};
+
+
+// --- MIGRATION FUNCTION ---
 export const startMigration = async (
     notionSettings: { apiKey: string, databaseId: string },
     supabaseSettings: SupabaseSettings,
+    filters: { startDate?: string, endDate?: string },
     onProgress: (current: number, total: number, status: string) => void,
     onLog: (msg: string) => void
 ): Promise<{ success: boolean }> => {
     
-    // Immediate log wrapper
     const log = (msg: string) => {
         const timeMsg = `[${new Date().toLocaleTimeString()}] ${msg}`;
         console.log(timeMsg);
         onLog(timeMsg);
     };
 
-    // Clean input (remove accidental spaces)
     const apiKey = notionSettings.apiKey.trim();
     const dbId = notionSettings.databaseId.trim();
 
     try {
-        log("Iniciando motor de migración...");
+        log("⚙️ Preparando consulta a Notion...");
         
-        // 1. Fetch all pages from Notion Database
         let allResults: any[] = [];
         let hasMore = true;
         let cursor: string | undefined = undefined;
 
+        // Construct Notion Filter Object
+        const notionFilters: any[] = [];
+        if (filters.startDate) {
+            notionFilters.push({ property: "Fecha", date: { on_or_after: filters.startDate } });
+        }
+        if (filters.endDate) {
+            notionFilters.push({ property: "Fecha", date: { on_or_before: filters.endDate } });
+        }
+
+        const filterPayload = notionFilters.length > 0 
+            ? (notionFilters.length === 1 ? notionFilters[0] : { and: notionFilters }) 
+            : undefined;
+
+        if (filterPayload) {
+            log(`🔎 Aplicando filtro Notion: ${JSON.stringify(filterPayload)}`);
+        }
+
+        // 1. Fetch Loop
         while (hasMore) {
-            log("📡 Contactando Notion API...");
             const url = `https://api.notion.com/v1/databases/${dbId}/query`;
-            const body: any = { page_size: 50 }; // Reduce page size to avoid timeouts
+            const body: any = { 
+                page_size: 50,
+                filter: filterPayload
+            };
             if (cursor) body.start_cursor = cursor;
 
             const response = await fetchWithFallback(url, {
@@ -121,10 +242,6 @@ export const startMigration = async (
 
             if (!response.ok) {
                 const errText = await response.text();
-                // Check specifically for 401/404 to give better hints
-                if (response.status === 401) throw new Error("API Key rechazada (401). Verifica la clave.");
-                if (response.status === 404) throw new Error("Base de datos no encontrada (404). Verifica el ID y los permisos.");
-                
                 throw new Error(`Error Notion (${response.status}): ${errText}`);
             }
             
@@ -133,63 +250,62 @@ export const startMigration = async (
             hasMore = data.has_more;
             cursor = data.next_cursor;
             
-            log(`📥 Descargados ${data.results.length} registros. Total: ${allResults.length}`);
-            onProgress(allResults.length, -1, "Escaneando Notion...");
+            onProgress(allResults.length, -1, `Descargando: ${allResults.length} encontrados...`);
         }
 
         const total = allResults.length;
-        log(`📋 TOTAL ENCONTRADO: ${total} registros.`);
+        log(`📋 TOTAL A PROCESAR: ${total} registros.`);
 
-        // 2. Process each page
+        if (total === 0) {
+            log("⚠️ No se encontraron registros con esos filtros.");
+            return { success: true };
+        }
+
+        // 2. Process
         for (let i = 0; i < total; i++) {
             const page = allResults[i];
             const props = page.properties;
 
-            // --- MAP PROPERTIES ---
-            
             // Title
             const titleList = props['Título']?.title || [];
             let title = titleList.length > 0 ? titleList[0].plain_text : "Sin título";
             
-            onProgress(i + 1, total, `Procesando ${i + 1}/${total}: ${title}`);
+            onProgress(i + 1, total, `Migrando ${i + 1}/${total}: ${title}`);
 
-            // Record Type (Select)
+            // Type
             let recordTypeStr = props['Tipo de registro']?.select?.name || "Resumen";
             let recordType = Object.values(RecordType).find(r => r === recordTypeStr) || RecordType.SUMMARY;
 
-            // Date & Time
-            let dateStr = "";
+            // --- STRICT DATE/TIME PARSING (Fixing Timezone Issues) ---
+            // We read the RAW strings from Notion. We do NOT use new Date() to parse them.
+            
+            // 1. Date: Notion returns "YYYY-MM-DD" in date.start
+            let dateStr = props['Fecha']?.date?.start || "";
+            
+            // 2. Time: Search in 'Hora' Text Column
             let timeStr = "";
-            
-            if (props['Fecha']?.date?.start) {
-                const dateObj = new Date(props['Fecha'].date.start);
-                dateStr = dateObj.toISOString().split('T')[0];
-            }
-            
-            if (props['Hora']?.rich_text && props['Hora'].rich_text.length > 0) {
-                timeStr = props['Hora'].rich_text[0].plain_text;
-            } else if (props['Fecha']?.date?.start && props['Fecha'].date.start.includes('T')) {
-                 const dateObj = new Date(props['Fecha'].date.start);
-                 const hh = String(dateObj.getHours()).padStart(2, '0');
-                 const mm = String(dateObj.getMinutes()).padStart(2, '0');
-                 timeStr = `${hh}:${mm}`;
+            const horaRichText = props['Hora']?.rich_text;
+            if (horaRichText && horaRichText.length > 0) {
+                // Assuming format "HH:mm" in text
+                timeStr = horaRichText[0].plain_text.trim();
             }
 
-            if (!dateStr) dateStr = new Date().toISOString().split('T')[0];
-            if (!timeStr) timeStr = "12:00";
+            // Fallbacks
+            if (!dateStr) dateStr = new Date().toISOString().split('T')[0]; // Only if missing
+            if (!timeStr) timeStr = "12:00"; // Default noon if missing
 
             // Description
             const descList = props['Descripción']?.rich_text || [];
             let description = descList.map((t: any) => t.plain_text).join("");
 
-            // Health Status
+            // Health
             const statusStr = props['Estado de Salud']?.select?.name;
             let healthStatus = Object.values(HealthStatus).find(s => s === statusStr) || null;
 
             // Weight
             const weight = props['Peso']?.number || undefined;
 
-            // Files / Photos
+            // Photo
             let photoBase64: string | undefined = undefined;
             const files = props['Foto']?.files || props['Archivos']?.files || [];
             
@@ -201,22 +317,9 @@ export const startMigration = async (
                 }
             }
 
-            // --- AI ENRICHMENT ---
-            if (!description && photoBase64) {
-                log(`   ✨ Analizando con IA (falta descripción)...`);
-                try {
-                    const aiResult = await analyzeImage(photoBase64);
-                    description = `[IA] ${aiResult.description}`;
-                    if (title === "Sin título") title = aiResult.title;
-                    if (!healthStatus) healthStatus = aiResult.healthStatus || null;
-                } catch (e) {
-                    log(`   ⚠️ IA falló: ${e}`);
-                    description = "Imagen migrada (IA falló al describir).";
-                }
-            }
+            // --- NO AI ---
+            // Description stays as is.
 
-            // --- BUILD EVENT ---
-            // CRITICAL: Use robust ID generator, NOT crypto.randomUUID directly
             const newEvent: DogEvent = {
                 id: generateUUID(), 
                 title,
@@ -230,20 +333,18 @@ export const startMigration = async (
                 synced: false
             };
 
-            // --- SAVE TO SUPABASE ---
             const saveResult = await saveEventToSupabase(newEvent, supabaseSettings);
             
             if (!saveResult.success) {
-                log(`   ❌ Error Supabase: ${saveResult.error}`);
+                log(`   ❌ Error guardando: ${saveResult.error}`);
             }
         }
 
-        log("✅ Migración completada.");
+        log("✅ Migración completada exitosamente.");
         return { success: true };
 
     } catch (error: any) {
         log(`❌ Error CRÍTICO Migración: ${error.message}`);
-        console.error(error);
         return { success: false };
     }
 };

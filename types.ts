@@ -37,6 +37,20 @@ export interface SchemaCheck {
   requiredType: string;
 }
 
+// --- NEW AUTH TYPES ---
+export interface UserProfile {
+  id: string;
+  email: string;
+  full_name?: string;
+}
+
+export interface Pet {
+  id: string;
+  name: string;
+  photo_url?: string;
+  owner_id: string;
+}
+
 export interface DogEvent {
   id: string;
   title: string;
@@ -55,6 +69,10 @@ export interface DogEvent {
   // Cloud data (Supabase)
   photoUrl?: string;
   fileUrl?: string;
+  
+  // NEW RELATIONS
+  userId?: string; // Created by
+  petId?: string; // Belongs to
   
   synced: boolean;
 }
@@ -80,10 +98,14 @@ export interface ConnectionResult {
 // --- AI Query / Chat Types ---
 
 export interface EventSearchParams {
-  recordType?: RecordType;
+  recordType?: RecordType | '';
   startDate?: string;
   endDate?: string;
-  limit?: number;
+  searchTitle?: string;
+  page?: number;
+  pageSize?: number;
+  limit?: number; // Keep for compatibility or manual overrides
+  petId?: string; // REQUIRED for multi-tenant
 }
 
 export interface ChatMessage {

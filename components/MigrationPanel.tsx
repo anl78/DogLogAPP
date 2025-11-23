@@ -1,16 +1,23 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { SupabaseSettings } from '../types';
-import { startMigration } from '../services/migrationService';
+import { SupabaseSettings, Pet } from '../types';
+import { startMigration, deleteMigratedEvents, assignOrphanEvents } from '../services/migrationService';
 
 interface MigrationPanelProps {
     supabaseSettings: SupabaseSettings;
+    currentPet?: Pet | null;
+    currentUser?: any;
 }
 
-const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings }) => {
+const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings, currentPet, currentUser }) => {
     const [isOpen, setIsOpen] = useState(false);
+    
+    // Inputs
     const [notionKey, setNotionKey] = useState('');
     const [dbId, setDbId] = useState('');
-    const [status, setStatus] = useState<'idle' | 'confirming' | 'running' | 'done'>('idle');
+    const [startDate, setStartDate] = useState('');
+    const [endDate, setEndDate] = useState('');
+
+    const [status, setStatus] = useState<'idle' | 'confirming_migration' | 'confirming_deletion' | 'confirming_rescue' | 'running' | 'done'>('idle');
     const [progress, setProgress] = useState({ current: 0, total: 0, msg: '' });
     const [logs, setLogs] = useState<string[]>([]);
     const logsEndRef = useRef<HTMLDivElement>(null);
@@ -22,11 +29,12 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings }) => 
         }
     }, [logs]);
 
-    const handlePreClick = (e: React.MouseEvent) => {
+    // Helpers to manage UI blocking
+    const handleActionClick = (e: React.MouseEvent, action: 'migration' | 'deletion' | 'rescue') => {
         e.preventDefault();
-        e.stopPropagation(); // Evitar que suba al formulario de ajustes
+        e.stopPropagation();
 
-        if (!notionKey || !dbId) {
+        if (action === 'migration' && (!notionKey || !dbId)) {
             alert("Faltan datos de Notion.");
             return;
         }
@@ -34,31 +42,64 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings }) => 
             alert("Supabase no configurado.");
             return;
         }
-        setStatus('confirming');
+        
+        if (action === 'rescue' && (!currentPet || !currentUser)) {
+            alert("Necesitas estar logueado y tener una mascota activa.");
+            return;
+        }
+
+        if (action === 'migration') setStatus('confirming_migration');
+        else if (action === 'deletion') setStatus('confirming_deletion');
+        else setStatus('confirming_rescue');
     };
 
-    const handleStartMigration = (e: React.MouseEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
-
-        // 1. Update UI state IMMEDIATELY
+    const runProcess = (type: 'migration' | 'deletion' | 'rescue') => {
         setStatus('running');
-        setLogs(["🚀 Inicializando sistema...", "⏳ Por favor espera..."]);
+        const initialLog = type === 'migration' 
+            ? ["🚀 Inicializando migración...", `📅 Filtro: ${startDate || 'Inicio'} a ${endDate || 'Fin'}`] 
+            : type === 'deletion'
+                ? ["🗑️ Inicializando borrado...", `📅 Filtro: ${startDate || 'Inicio'} a ${endDate || 'Fin'}`]
+                : ["🛟 Rescatando huérfanos..."];
         
-        // 2. Defer execution to let UI paint
+        setLogs(initialLog);
+        
         setTimeout(async () => {
             try {
-                await startMigration(
-                    { apiKey: notionKey, databaseId: dbId },
-                    supabaseSettings,
-                    (current, total, msg) => {
-                        setProgress({ current, total, msg });
-                    },
-                    (newLog) => {
-                        setLogs(prev => [...prev, newLog]);
+                const filters = {
+                    startDate: startDate || undefined,
+                    endDate: endDate || undefined
+                };
+
+                const logger = (msg: string) => setLogs(prev => [...prev, msg]);
+
+                if (type === 'migration') {
+                    await startMigration(
+                        { apiKey: notionKey, databaseId: dbId },
+                        supabaseSettings,
+                        filters,
+                        (current, total, msg) => setProgress({ current, total, msg }),
+                        logger
+                    );
+                } else if (type === 'deletion') {
+                    await deleteMigratedEvents(
+                        supabaseSettings,
+                        filters,
+                        logger
+                    );
+                } else if (type === 'rescue') {
+                    if (currentPet && currentUser) {
+                        await assignOrphanEvents(
+                            supabaseSettings,
+                            currentUser.id,
+                            currentPet.id,
+                            logger
+                        );
+                    } else {
+                        throw new Error("Faltan datos de usuario/mascota.");
                     }
-                );
-                setLogs(prev => [...prev, "🏁 FINALIZADO."]);
+                }
+                
+                setLogs(prev => [...prev, "🏁 OPERACIÓN FINALIZADA."]);
                 setStatus('done');
             } catch (err: any) {
                 setLogs(prev => [...prev, `❌ ERROR FATAL: ${err.message}`]);
@@ -83,40 +124,64 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings }) => 
 
     return (
         <div className="mt-6 bg-slate-50 border border-slate-200 rounded-xl p-4 animate-fade-in-up">
-            <h3 className="font-bold text-slate-700 mb-2">Importar desde Notion</h3>
-            <p className="text-xs text-slate-500 mb-4">
-                Copia los datos de tu tabla antigua a Supabase.
-            </p>
-
+            <h3 className="font-bold text-slate-700 mb-2">Gestión de Datos Notion -> Supabase</h3>
+            
             <div className="space-y-3">
-                <div>
-                    <label className="block text-xs font-semibold text-slate-500 mb-1">Notion API Secret</label>
+                {/* Notion Config */}
+                <div className="grid grid-cols-1 gap-2">
                     <input 
                         type="password" 
                         value={notionKey} 
                         onChange={e => setNotionKey(e.target.value)}
-                        className="w-full p-2 rounded-lg border border-slate-200 text-sm"
-                        placeholder="secret_..."
+                        className="w-full p-2 rounded-lg border border-slate-200 text-xs"
+                        placeholder="Notion Secret Key (secret_...)"
                         disabled={status === 'running'}
                     />
-                </div>
-                <div>
-                    <label className="block text-xs font-semibold text-slate-500 mb-1">Database ID</label>
                     <input 
                         type="text" 
                         value={dbId} 
                         onChange={e => setDbId(e.target.value)}
-                        className="w-full p-2 rounded-lg border border-slate-200 text-sm"
-                        placeholder="ID de la base de datos (32 chars)"
+                        className="w-full p-2 rounded-lg border border-slate-200 text-xs"
+                        placeholder="Notion Database ID"
                         disabled={status === 'running'}
                     />
+                </div>
+
+                {/* Date Filters */}
+                <div className="bg-white p-3 rounded-lg border border-slate-200">
+                    <label className="block text-xs font-bold text-slate-500 mb-2 uppercase">Filtros de Acción</label>
+                    <div className="grid grid-cols-2 gap-2">
+                        <div>
+                            <span className="text-[10px] text-slate-400">Desde (Incluido)</span>
+                            <input 
+                                type="date" 
+                                value={startDate} 
+                                onChange={e => setStartDate(e.target.value)}
+                                className="w-full p-2 rounded-lg border border-slate-200 text-xs"
+                                disabled={status === 'running'}
+                            />
+                        </div>
+                        <div>
+                            <span className="text-[10px] text-slate-400">Hasta (Incluido)</span>
+                            <input 
+                                type="date" 
+                                value={endDate} 
+                                onChange={e => setEndDate(e.target.value)}
+                                className="w-full p-2 rounded-lg border border-slate-200 text-xs"
+                                disabled={status === 'running'}
+                            />
+                        </div>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1 italic">
+                        Si dejas las fechas vacías, las acciones afectarán a <strong>TODO</strong> el historial.
+                    </p>
                 </div>
 
                 {/* Progress Bar */}
                 {status === 'running' && (
                     <div className="bg-white p-3 rounded-lg border border-blue-100">
                         <div className="flex justify-between text-xs font-bold text-blue-600 mb-1">
-                            <span className="truncate pr-2">{progress.msg || "Iniciando..."}</span>
+                            <span className="truncate pr-2">{progress.msg || "Procesando..."}</span>
                             <span>{progress.total > 0 ? `${Math.round((progress.current / progress.total) * 100)}%` : ''}</span>
                         </div>
                         <div className="w-full bg-slate-100 rounded-full h-2">
@@ -128,33 +193,69 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings }) => 
                     </div>
                 )}
 
-                {/* Buttons State Machine */}
+                {/* Action Buttons */}
                 {status === 'idle' && (
-                    <button 
-                        type="button"
-                        onClick={handlePreClick}
-                        className="w-full py-2 bg-indigo-600 text-white rounded-lg font-bold text-sm shadow-sm active:scale-95"
-                    >
-                        Preparar Migración
-                    </button>
-                )}
-
-                {status === 'confirming' && (
-                    <div className="flex gap-2">
-                         <button 
-                            type="button"
-                            onClick={() => setStatus('idle')}
-                            className="flex-1 py-2 bg-slate-200 text-slate-700 rounded-lg font-bold text-sm"
-                        >
-                            Cancelar
-                        </button>
+                    <div className="flex flex-col gap-2 pt-2">
                         <button 
                             type="button"
-                            onClick={handleStartMigration}
-                            className="flex-[2] py-2 bg-red-600 text-white rounded-lg font-bold text-sm shadow-sm active:scale-95 animate-pulse"
+                            onClick={(e) => handleActionClick(e, 'migration')}
+                            className="w-full py-2.5 bg-indigo-600 text-white rounded-lg font-bold text-sm shadow-sm active:scale-95"
                         >
-                            ¿Confirmar Inicio?
+                            Importar de Notion (con Filtro)
                         </button>
+                        
+                        <button 
+                            type="button"
+                            onClick={(e) => handleActionClick(e, 'rescue')}
+                            className="w-full py-2.5 bg-teal-600 text-white rounded-lg font-bold text-sm shadow-sm active:scale-95"
+                        >
+                            Asignar Huérfanos a {currentPet?.name || 'Actual'}
+                        </button>
+
+                        <button 
+                            type="button"
+                            onClick={(e) => handleActionClick(e, 'deletion')}
+                            className="w-full py-2.5 bg-white border border-red-200 text-red-600 rounded-lg font-bold text-sm shadow-sm active:scale-95 hover:bg-red-50"
+                        >
+                            Borrar Rango en Supabase
+                        </button>
+                    </div>
+                )}
+
+                {/* Confirmation States */}
+                {status === 'confirming_migration' && (
+                    <div className="bg-indigo-50 p-3 rounded-lg border border-indigo-100">
+                        <p className="text-xs font-bold text-indigo-900 mb-2">
+                            ¿Importar eventos {startDate ? `desde ${startDate}` : 'desde el inicio'} {endDate ? `hasta ${endDate}` : 'hasta hoy'}?
+                        </p>
+                        <div className="flex gap-2">
+                            <button type="button" onClick={() => setStatus('idle')} className="flex-1 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg text-xs font-bold">Cancelar</button>
+                            <button type="button" onClick={() => runProcess('migration')} className="flex-1 py-2 bg-indigo-600 text-white rounded-lg text-xs font-bold shadow-sm">Sí, Importar</button>
+                        </div>
+                    </div>
+                )}
+                
+                {status === 'confirming_rescue' && (
+                    <div className="bg-teal-50 p-3 rounded-lg border border-teal-100">
+                        <p className="text-xs font-bold text-teal-900 mb-2">
+                            ¿Asignar todos los eventos sin dueño a {currentPet?.name}?
+                        </p>
+                        <div className="flex gap-2">
+                            <button type="button" onClick={() => setStatus('idle')} className="flex-1 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg text-xs font-bold">Cancelar</button>
+                            <button type="button" onClick={() => runProcess('rescue')} className="flex-1 py-2 bg-teal-600 text-white rounded-lg text-xs font-bold shadow-sm">Sí, Asignar</button>
+                        </div>
+                    </div>
+                )}
+
+                {status === 'confirming_deletion' && (
+                    <div className="bg-red-50 p-3 rounded-lg border border-red-100">
+                        <p className="text-xs font-bold text-red-900 mb-2">
+                            ⚠️ PELIGRO: Se borrarán PERMANENTEMENTE fotos y registros de Supabase {startDate ? `desde ${startDate}` : ''} {endDate ? `hasta ${endDate}` : ''}.
+                        </p>
+                        <div className="flex gap-2">
+                            <button type="button" onClick={() => setStatus('idle')} className="flex-1 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg text-xs font-bold">Cancelar</button>
+                            <button type="button" onClick={() => runProcess('deletion')} className="flex-1 py-2 bg-red-600 text-white rounded-lg text-xs font-bold shadow-sm">Sí, Borrar Todo</button>
+                        </div>
                     </div>
                 )}
 
@@ -164,7 +265,7 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings }) => 
                         onClick={() => setStatus('idle')}
                         className="w-full py-2 bg-green-600 text-white rounded-lg font-bold text-sm"
                     >
-                        Listo (Reiniciar)
+                        Listo (Volver)
                     </button>
                 )}
 
