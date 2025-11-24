@@ -23,12 +23,10 @@ const DEFAULT_OWNER_PERMISSIONS: CollaboratorPermissions = {
 
 const App: React.FC = () => {
   // --- Environment Variables Check ---
-  const meta = import.meta as any;
-  const envVars = meta.env || {};
-  
-  // HARD REQUIREMENT: Variables must exist in Vercel/Env
-  const envSupabaseUrl = envVars.VITE_SUPABASE_URL;
-  const envSupabaseKey = envVars.VITE_SUPABASE_KEY;
+  // Usamos process.env porque lo hemos definido en vite.config.ts para que se reemplace estáticamente.
+  // Esto es más robusto que import.meta.env en ciertos entornos de despliegue.
+  const envSupabaseUrl = process.env.VITE_SUPABASE_URL;
+  const envSupabaseKey = process.env.VITE_SUPABASE_KEY;
   
   // --- State ---
   // Settings are now strictly from Environment, no manual override allowed for users
@@ -258,7 +256,8 @@ const App: React.FC = () => {
         
         // Logic Fix: ONLY assign userId if it's a NEW event (no ID yet)
         // If it's an existing event (has ID), we preserve the original owner
-        if (!eventToSave.id && !eventToSave.userId && session?.user?.id) {
+        // We check for !eventToSave.userId because EventForm now preserves it if editing
+        if (!eventToSave.userId && session?.user?.id) {
             eventToSave.userId = session.user.id;
         }
 

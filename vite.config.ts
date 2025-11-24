@@ -10,9 +10,10 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     define: {
-      // Esto inyecta la API KEY en el cliente. 
-      // IMPORTANTE: En producción (Vercel), debes añadir la variable 'API_KEY' en la configuración del proyecto en Vercel.
-      'process.env.API_KEY': JSON.stringify(env.API_KEY || process.env.API_KEY)
+      // Esto inyecta las variables en el cliente reemplazando el string process.env.VAR por el valor real.
+      'process.env.API_KEY': JSON.stringify(env.API_KEY || process.env.API_KEY),
+      'process.env.VITE_SUPABASE_URL': JSON.stringify(env.VITE_SUPABASE_URL || process.env.VITE_SUPABASE_URL),
+      'process.env.VITE_SUPABASE_KEY': JSON.stringify(env.VITE_SUPABASE_KEY || process.env.VITE_SUPABASE_KEY)
     }
   };
 });
