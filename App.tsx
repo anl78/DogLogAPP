@@ -25,11 +25,18 @@ const App: React.FC = () => {
   // --- Environment Variables Check ---
   const meta = import.meta as any;
   const envVars = meta.env || {};
+  
+  // HARD REQUIREMENT: Variables must exist in Vercel/Env
   const envSupabaseUrl = envVars.VITE_SUPABASE_URL;
   const envSupabaseKey = envVars.VITE_SUPABASE_KEY;
-  const isEnvConfigured = !!(envSupabaseUrl && envSupabaseKey);
-
+  
   // --- State ---
+  // Settings are now strictly from Environment, no manual override allowed for users
+  const [settings] = useState<SupabaseSettings>({ 
+      supabaseUrl: envSupabaseUrl || '', 
+      supabaseKey: envSupabaseKey || '' 
+  });
+
   const [session, setSession] = useState<any>(null);
   const [pets, setPets] = useState<Pet[]>([]);
   const [currentPet, setCurrentPet] = useState<Pet | null>(null);
@@ -44,21 +51,6 @@ const App: React.FC = () => {
 
   const [view, setView] = useState<'home' | 'add' | 'settings' | 'consult'>('home');
   
-  const [settings, setSettings] = useState<SupabaseSettings>(() => {
-      if (isEnvConfigured) {
-          return { supabaseUrl: envSupabaseUrl, supabaseKey: envSupabaseKey };
-      }
-      const savedSettings = localStorage.getItem('doglog_settings');
-      if (savedSettings) {
-          try {
-              return JSON.parse(savedSettings);
-          } catch (e) {
-              console.error("Error loading settings", e);
-          }
-      }
-      return { supabaseUrl: '', supabaseKey: '' };
-  });
-
   // --- Auth & Pet Loading Effect ---
   useEffect(() => {
     if (settings.supabaseUrl && settings.supabaseKey) {
@@ -264,9 +256,9 @@ const App: React.FC = () => {
         // Inject Relations
         eventToSave.petId = currentPet.id;
         
-        // Fix: If userId is missing (new event), assign current user.
-        // We don't check !event.id because the Form generates a UUID even for new events.
-        if (!eventToSave.userId && session?.user?.id) {
+        // Logic Fix: ONLY assign userId if it's a NEW event (no ID yet)
+        // If it's an existing event (has ID), we preserve the original owner
+        if (!eventToSave.id && !eventToSave.userId && session?.user?.id) {
             eventToSave.userId = session.user.id;
         }
 
@@ -618,24 +610,35 @@ const App: React.FC = () => {
 
   // --- ROOT RENDER ---
 
-  if (authLoading) return <div className="h-full w-full flex items-center justify-center">Cargando...</div>;
-
-  if (!session) {
-      if (settings.supabaseUrl && settings.supabaseKey) {
-          return <Auth settings={settings} onLoginSuccess={() => setAuthLoading(false)} />;
-      }
+  // 1. Critical Error: Missing Env Vars
+  if (!settings.supabaseUrl || !settings.supabaseKey) {
       return (
-          <div className="p-8">
-              <h1 className="text-2xl font-bold mb-4">Configuración Inicial</h1>
-              <input placeholder="URL" value={settings.supabaseUrl} onChange={e=>setSettings({...settings,supabaseUrl:e.target.value})} className="w-full p-3 border mb-3 rounded"/>
-              <input placeholder="Key" type="password" value={settings.supabaseKey} onChange={e=>setSettings({...settings,supabaseKey:e.target.value})} className="w-full p-3 border mb-3 rounded"/>
-              <button onClick={()=>localStorage.setItem('doglog_settings',JSON.stringify(settings))} className="w-full bg-blue-600 text-white p-3 rounded">Guardar</button>
+          <div className="h-full w-full flex flex-col items-center justify-center p-8 text-center bg-red-50">
+              <Icons.AlertTriangle className="w-16 h-16 text-red-500 mb-4" />
+              <h1 className="text-xl font-bold text-red-800 mb-2">Error de Configuración</h1>
+              <p className="text-red-600 text-sm mb-4">
+                  La aplicación no detecta las credenciales de Supabase.
+              </p>
+              <div className="bg-white p-4 rounded-lg border border-red-200 text-left w-full">
+                  <p className="text-xs font-mono text-slate-600 mb-2">Asegúrate de configurar estas variables de entorno en Vercel:</p>
+                  <ul className="list-disc list-inside text-xs font-bold text-slate-800">
+                      <li>VITE_SUPABASE_URL</li>
+                      <li>VITE_SUPABASE_KEY</li>
+                  </ul>
+              </div>
           </div>
       );
   }
 
+  if (authLoading) return <div className="h-full w-full flex items-center justify-center">Cargando...</div>;
+
+  // 2. Auth Screen (Login/Signup)
+  if (!session) {
+      return <Auth settings={settings} onLoginSuccess={() => setAuthLoading(false)} />;
+  }
+
+  // 3. No Pet Screen
   if (session && !currentPet) {
-      // SCREEN FOR USERS WITHOUT A PET (OWNERS OR COLLABORATORS)
       return (
         <div className="h-full flex flex-col items-center justify-center p-6 text-center bg-slate-50">
             <h2 className="text-2xl font-bold mb-2 text-slate-800">Bienvenido/a</h2>
@@ -683,6 +686,7 @@ const App: React.FC = () => {
       );
   }
 
+  // 4. Main App
   return (
     <div className="h-full w-full max-w-md mx-auto bg-white shadow-2xl relative overflow-hidden">
         {view === 'home' && renderHome()}

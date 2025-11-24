@@ -173,12 +173,17 @@ export const inviteCollaborator = async (
     if (!client) return { success: false, error: "Client error" };
 
     try {
-        console.log("Inviting email:", email);
-        // 1. Find User ID by Email using RPC (Secure)
-        // Uses 'target_email' to avoid ambiguity
-        const { data: userId, error: rpcError } = await client.rpc('get_user_id_by_email', { target_email: email });
+        console.log("Inviting email (via find_user_by_email):", email);
         
-        if (rpcError) return { success: false, error: `Error buscando usuario: ${rpcError.message}` };
+        // USA NUEVA FUNCIÓN 'find_user_by_email' con parámetro 'user_email'
+        // Esto evita conflictos de caché con la función anterior.
+        const { data: userId, error: rpcError } = await client.rpc('find_user_by_email', { user_email: email });
+        
+        if (rpcError) {
+            console.error("RPC Error:", rpcError);
+            return { success: false, error: `Error buscando usuario: ${rpcError.message}` };
+        }
+        
         if (!userId) return { success: false, error: "Usuario no encontrado. Pídele que se registre en la App primero." };
 
         // 2. Insert into collaborators
@@ -263,7 +268,8 @@ export const getCollaboratorPermissions = async (
         .single();
 
     if (error) {
-        console.warn("Error getting permissions:", error.message);
+        // If row not found, it might be the owner (who has no entry in collaborators if using direct owner_id link, 
+        // OR we just didn't find them). UI handles owner logic.
         return null;
     }
     return data.permissions as CollaboratorPermissions;
