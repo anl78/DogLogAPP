@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage, DogEvent, SupabaseSettings } from '../types';
 import { consultAssistant } from '../services/geminiService';
@@ -6,6 +7,8 @@ import { HEALTH_STATUS_COLORS, Icons } from '../constants';
 interface AIQueryViewProps {
   settings: SupabaseSettings;
   onEventClick: (event: DogEvent) => void;
+  currentPetId: string;
+  accessToken?: string;
 }
 
 const INITIAL_MESSAGE: ChatMessage = { 
@@ -14,7 +17,7 @@ const INITIAL_MESSAGE: ChatMessage = {
     text: '¡Hola! Soy tu asistente veterinario. Pregúntame sobre el historial de salud, últimas cacas, visitas al veterinario o tendencias. ¿En qué puedo ayudarte hoy?' 
 };
 
-const AIQueryView: React.FC<AIQueryViewProps> = ({ settings, onEventClick }) => {
+const AIQueryView: React.FC<AIQueryViewProps> = ({ settings, onEventClick, currentPetId, accessToken }) => {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([INITIAL_MESSAGE]);
@@ -53,9 +56,8 @@ const AIQueryView: React.FC<AIQueryViewProps> = ({ settings, onEventClick }) => 
     setIsLoading(true);
 
     try {
-        // Pass the full history (excluding the intro if needed, but here we include it as context 
-        // though the service usually maps roles. 'intro' will be treated as model role).
-        const response = await consultAssistant(newHistory, settings);
+        // Pass the full history along with pet context and auth token
+        const response = await consultAssistant(newHistory, settings, currentPetId, accessToken);
         
         const aiMsg: ChatMessage = {
             id: (Date.now() + 1).toString(),

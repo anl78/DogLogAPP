@@ -160,7 +160,7 @@ export const getCollaborators = async (settings: SupabaseSettings, petId: string
         console.error("Error getting collaborators:", error);
         return [];
     }
-    return data as PetCollaborator[];
+    return data as unknown as PetCollaborator[];
 };
 
 export const inviteCollaborator = async (
@@ -303,7 +303,7 @@ export const saveEventToSupabase = async (event: DogEvent, settings: SupabaseSet
 
             if (uploadError) {
                 console.error("Upload failed:", uploadError);
-                if (uploadError.statusCode === '403' || (uploadError as any).code === '42501') {
+                if ((uploadError as any).statusCode === '403' || (uploadError as any).code === '42501') {
                     return { success: false, error: `⛔ No tienes permiso para subir fotos.` };
                 }
                 return { success: false, error: `Error subiendo foto (Storage): ${uploadError.message}` };

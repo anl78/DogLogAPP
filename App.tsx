@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { DogEvent, SupabaseSettings, HealthStatus, AIAnalysisResult, RecordType, Pet, CollaboratorPermissions } from './types';
@@ -21,18 +22,41 @@ const DEFAULT_OWNER_PERMISSIONS: CollaboratorPermissions = {
     visible_types: []
 };
 
+// Declare globals injected by Vite define
+declare const __SUPABASE_URL__: string;
+declare const __SUPABASE_KEY__: string;
+declare const __API_KEY__: string;
+
+// Fallbacks for dev environment where Vite define might fail
+const FALLBACK_URL = "https://nvnmlausdsexvmcrnzxc.supabase.co";
+const FALLBACK_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im52bm1sYXVzZHNleHZtY3JuenhjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM2NTE5MjAsImV4cCI6MjA3OTIyNzkyMH0.i2ddyT9GvT70bkIHqSW_whf9UMqqkNnAWawC4k91W0c";
+const FALLBACK_GEMINI_KEY = "AIzaSyDRs92kUFJSJhQFgsbq7zgmBAgSYDi2Iuw";
+
 const App: React.FC = () => {
-  // --- Environment Variables Check ---
-  // Usamos process.env porque lo hemos definido en vite.config.ts para que se reemplace estáticamente.
-  // Esto es más robusto que import.meta.env en ciertos entornos de despliegue.
-  const envSupabaseUrl = process.env.VITE_SUPABASE_URL;
-  const envSupabaseKey = process.env.VITE_SUPABASE_KEY;
+  // --- Environment Variables (Injected Globals) ---
+  // @ts-ignore
+  let envSupabaseUrl = typeof __SUPABASE_URL__ !== 'undefined' ? __SUPABASE_URL__ : '';
+  // @ts-ignore
+  let envSupabaseKey = typeof __SUPABASE_KEY__ !== 'undefined' ? __SUPABASE_KEY__ : '';
+
+  // Apply Fallback if variables are missing or empty
+  if (!envSupabaseUrl || envSupabaseUrl === '""') envSupabaseUrl = FALLBACK_URL;
+  if (!envSupabaseKey || envSupabaseKey === '""') envSupabaseKey = FALLBACK_KEY;
   
+  // Also expose API Key for services via process.env shim if needed, or directly
+  // Fix: Use fallback if __API_KEY__ is missing
+  const apiKeyVal = typeof __API_KEY__ !== 'undefined' && __API_KEY__ !== '""' ? __API_KEY__ : FALLBACK_GEMINI_KEY;
+
+  if (typeof process === 'undefined') {
+      (window as any).process = { env: { API_KEY: apiKeyVal } };
+  } else {
+      process.env.API_KEY = apiKeyVal;
+  }
+
   // --- State ---
-  // Settings are now strictly from Environment, no manual override allowed for users
   const [settings] = useState<SupabaseSettings>({ 
-      supabaseUrl: envSupabaseUrl || '', 
-      supabaseKey: envSupabaseKey || '' 
+      supabaseUrl: envSupabaseUrl, 
+      supabaseKey: envSupabaseKey 
   });
 
   const [session, setSession] = useState<any>(null);
@@ -254,10 +278,10 @@ const App: React.FC = () => {
         // Inject Relations
         eventToSave.petId = currentPet.id;
         
-        // Logic Fix: ONLY assign userId if it's a NEW event (no ID yet)
-        // If it's an existing event (has ID), we preserve the original owner
-        // We check for !eventToSave.userId because EventForm now preserves it if editing
-        if (!eventToSave.userId && session?.user?.id) {
+        // Logic Fix: ONLY assign userId if it's a NEW event (missing ID).
+        // If updating (has ID), we keep existing userId to avoid ownership theft.
+        // We verify emptiness of userId as well to be safe.
+        if ((!eventToSave.id || !eventToSave.userId) && session?.user?.id) {
             eventToSave.userId = session.user.id;
         }
 
@@ -624,6 +648,10 @@ const App: React.FC = () => {
                       <li>VITE_SUPABASE_URL</li>
                       <li>VITE_SUPABASE_KEY</li>
                   </ul>
+                  <p className="text-xs font-mono text-slate-500 mt-4 border-t pt-2">
+                      <strong>Nota para Desarrollo Local:</strong><br/>
+                      Debes crear un archivo <code>.env</code> en la raíz del proyecto con estas variables.
+                  </p>
               </div>
           </div>
       );
@@ -690,7 +718,14 @@ const App: React.FC = () => {
     <div className="h-full w-full max-w-md mx-auto bg-white shadow-2xl relative overflow-hidden">
         {view === 'home' && renderHome()}
         {view === 'add' && renderAdd()}
-        {view === 'consult' && <AIQueryView settings={settings} onEventClick={(ev)=>{setDraftEvent(ev); setInputMethod('manual'); setView('add');}} />}
+        {view === 'consult' && (
+            <AIQueryView 
+                settings={settings} 
+                onEventClick={(ev)=>{setDraftEvent(ev); setInputMethod('manual'); setView('add');}}
+                currentPetId={currentPet.id}
+                accessToken={session.access_token} 
+            />
+        )}
         {view === 'settings' && renderSettings()}
         <Navbar currentView={view === 'add' && inputMethod !== 'menu' ? 'add' : view} setView={(v) => { setView(v); if(v === 'add') setInputMethod('menu'); }} />
     </div>

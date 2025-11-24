@@ -1,6 +1,17 @@
+
 import { GoogleGenAI, Type, FunctionDeclaration } from "@google/genai";
 import { AIAnalysisResult, HealthStatus, RecordType, SupabaseSettings, DogEvent, ChatMessage } from "../types";
 import { searchEvents } from "./supabaseService";
+
+// Injected by Vite
+declare const __API_KEY__: string;
+
+const getApiKey = () => {
+    // Try process.env first (if shimmed), then direct global injection
+    const key = process.env.API_KEY || (typeof __API_KEY__ !== 'undefined' ? __API_KEY__ : undefined);
+    if (!key || key === "PON_AQUI_TU_API_KEY_DE_GEMINI") return undefined;
+    return key;
+};
 
 const SYSTEM_INSTRUCTION = `
 Eres un asistente veterinario experto. Tu tarea es analizar la transcripción o el audio de un dueño de perro describiendo un evento.
@@ -52,7 +63,7 @@ export const analyzeInput = async (
   textInput: string,
   imageParts: string[] = []
 ): Promise<AIAnalysisResult> => {
-  const apiKey = process.env.API_KEY;
+  const apiKey = getApiKey();
   if (!apiKey) throw new Error("API Key missing");
 
   const ai = new GoogleGenAI({ apiKey });
@@ -110,7 +121,7 @@ export const analyzeInput = async (
 };
 
 export const analyzeImage = async (imageBase64: string): Promise<AIAnalysisResult> => {
-    const apiKey = process.env.API_KEY;
+    const apiKey = getApiKey();
     if (!apiKey) throw new Error("API Key missing");
   
     const ai = new GoogleGenAI({ apiKey });
@@ -166,7 +177,7 @@ export const analyzeImage = async (imageBase64: string): Promise<AIAnalysisResul
 }
 
 export const analyzeAudio = async (audioBase64: string): Promise<AIAnalysisResult> => {
-    const apiKey = process.env.API_KEY;
+    const apiKey = getApiKey();
     if (!apiKey) throw new Error("API Key missing");
   
     const ai = new GoogleGenAI({ apiKey });
@@ -221,7 +232,7 @@ export const analyzeAudio = async (audioBase64: string): Promise<AIAnalysisResul
 }
 
 export const analyzeFile = async (base64Data: string, mimeType: string): Promise<AIAnalysisResult> => {
-    const apiKey = process.env.API_KEY;
+    const apiKey = getApiKey();
     if (!apiKey) throw new Error("API Key missing");
   
     const ai = new GoogleGenAI({ apiKey });
@@ -307,9 +318,11 @@ const queryEventsTool: FunctionDeclaration = {
 
 export const consultAssistant = async (
     history: ChatMessage[], 
-    settings: SupabaseSettings
+    settings: SupabaseSettings,
+    petId: string, // REQUIRED for context
+    accessToken?: string // REQUIRED for RLS
 ): Promise<{ text: string, events?: DogEvent[] }> => {
-    const apiKey = process.env.API_KEY;
+    const apiKey = getApiKey();
     if (!apiKey) throw new Error("API Key missing");
 
     const ai = new GoogleGenAI({ apiKey });
@@ -350,12 +363,14 @@ export const consultAssistant = async (
             const args: any = call.args;
             // Execute Supabase Query
             try {
+                // IMPORTANT: Pass petId and accessToken to ensure RLS compliance and context
                 foundEvents = await searchEvents({
                     recordType: args.recordType,
                     startDate: args.startDate,
                     endDate: args.endDate,
-                    limit: args.limit
-                }, settings);
+                    limit: args.limit,
+                    petId: petId 
+                }, settings, accessToken);
             } catch (e) {
                 console.error("Supabase Search Error", e);
             }
