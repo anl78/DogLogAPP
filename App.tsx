@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { DogEvent, SupabaseSettings, HealthStatus, AIAnalysisResult, RecordType, Pet, CollaboratorPermissions } from './types';
-import { saveEventToSupabase, testSupabaseConnection, searchEvents, deleteEvent, getUserPets, createPet, getCollaboratorPermissions } from './services/supabaseService';
+import { saveEventToSupabase, testSupabaseConnection, searchEvents, deleteEvent, getUserPets, createPet, getCollaboratorPermissions, checkUnreadMessages } from './services/supabaseService';
 import { analyzeAudio, analyzeInput, analyzeImage, analyzeFile } from './services/geminiService';
 import { HEALTH_STATUS_COLORS, Icons } from './constants';
 import Navbar from './components/Navbar';
@@ -11,6 +11,7 @@ import AudioRecorder from './components/AudioRecorder';
 import AIQueryView from './components/AIQueryView';
 import MigrationPanel from './components/MigrationPanel';
 import TeamManager from './components/TeamManager';
+import BoardView from './components/BoardView';
 import Auth from './components/Auth';
 import ImageViewer from './components/ImageViewer';
 
@@ -60,9 +61,11 @@ const App: React.FC = () => {
   const [newPetName, setNewPetName] = useState('');
   const [creatingPet, setCreatingPet] = useState(false);
 
-  const [view, setView] = useState<'home' | 'add' | 'settings' | 'consult'>('home');
+  const [view, setView] = useState<'home' | 'board' | 'add' | 'settings' | 'consult'>('home');
   const [fullScreenImage, setFullScreenImage] = useState<string | null>(null);
   
+  const [hasUnreadMessages, setHasUnreadMessages] = useState(false);
+
   // --- Auth & Pet Loading Effect ---
   useEffect(() => {
     if (settings.supabaseUrl && settings.supabaseKey) {
@@ -141,6 +144,23 @@ const App: React.FC = () => {
       
       loadPerms();
   }, [currentPet, session]);
+
+  // --- Poll for Unread Messages ---
+  useEffect(() => {
+      if (!currentPet || !session || view === 'board') {
+          if (view === 'board') setHasUnreadMessages(false);
+          return;
+      }
+
+      const check = async () => {
+          const unread = await checkUnreadMessages(settings, currentPet.id, session.access_token);
+          setHasUnreadMessages(unread);
+      };
+
+      check(); // Initial check
+      const interval = setInterval(check, 30000); // Poll every 30s
+      return () => clearInterval(interval);
+  }, [currentPet, session, view]);
 
 
   // --- Event & Pagination State ---
@@ -732,6 +752,14 @@ const App: React.FC = () => {
     <div className="h-full w-full max-w-md mx-auto bg-white shadow-2xl relative overflow-hidden">
         {view === 'home' && renderHome()}
         {view === 'add' && renderAdd()}
+        {view === 'board' && (
+            <BoardView 
+                settings={settings}
+                petId={currentPet.id}
+                currentUserId={session.user.id}
+                accessToken={session.access_token}
+            />
+        )}
         {view === 'consult' && (
             <AIQueryView 
                 settings={settings} 
@@ -741,7 +769,11 @@ const App: React.FC = () => {
             />
         )}
         {view === 'settings' && renderSettings()}
-        <Navbar currentView={view === 'add' && inputMethod !== 'menu' ? 'add' : view} setView={(v) => { setView(v); if(v === 'add') setInputMethod('menu'); }} />
+        <Navbar 
+            currentView={view === 'add' && inputMethod !== 'menu' ? 'add' : view} 
+            setView={(v) => { setView(v); if(v === 'add') setInputMethod('menu'); }}
+            hasUnread={hasUnreadMessages}
+        />
         
         <ImageViewer src={fullScreenImage} onClose={() => setFullScreenImage(null)} />
     </div>

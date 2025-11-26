@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState } from 'react';
 import { CollaboratorPermissions, Pet, PetCollaborator, RecordType, SupabaseSettings } from '../types';
 import { getCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorPermissions } from '../services/supabaseService';
@@ -50,7 +51,7 @@ const TeamManager: React.FC<TeamManagerProps> = ({ settings, currentPet, current
         
         if (result.success) {
             setInviteEmail('');
-            alert("¡Invitación aceptada! El usuario ya tiene acceso.");
+            alert("¡Usuario añadido! Ya tiene acceso al equipo.");
             loadMembers();
         } else {
             alert(result.error);
@@ -174,7 +175,7 @@ const TeamManager: React.FC<TeamManagerProps> = ({ settings, currentPet, current
             {/* Invite Form (Only Owner) */}
             {isOwner && (
                 <form onSubmit={handleInvite} className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Invitar Miembro</label>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Añadir miembro al equipo de cuidado</label>
                     <div className="flex gap-2">
                         <input 
                             type="email" 
@@ -182,18 +183,18 @@ const TeamManager: React.FC<TeamManagerProps> = ({ settings, currentPet, current
                             placeholder="Email del usuario registrado"
                             value={inviteEmail}
                             onChange={e => setInviteEmail(e.target.value)}
-                            className="flex-1 p-2 rounded-lg border border-slate-200 text-sm"
+                            className="flex-1 p-2 rounded-lg border border-slate-200 text-sm bg-white"
                         />
                         <button 
                             type="submit" 
                             disabled={inviting}
                             className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold disabled:opacity-50"
                         >
-                            {inviting ? '...' : 'Invitar'}
+                            {inviting ? '...' : 'Añadir'}
                         </button>
                     </div>
-                    <p className="text-[10px] text-slate-400 mt-2">
-                        * El usuario debe haber descargado la app y registrado con este email antes de invitarle.
+                    <p className="text-[10px] text-orange-500 mt-2 font-medium">
+                        * Nota: No se envían emails. El usuario debe haber descargado la app y creado su cuenta con este email para que puedas añadirlo.
                     </p>
                 </form>
             )}

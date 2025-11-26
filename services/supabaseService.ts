@@ -1,5 +1,6 @@
+
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { DogEvent, SupabaseSettings, ConnectionResult, EventSearchParams, RecordType, Pet, PetCollaborator, CollaboratorPermissions } from '../types';
+import { DogEvent, SupabaseSettings, ConnectionResult, EventSearchParams, RecordType, Pet, PetCollaborator, CollaboratorPermissions, PetNote } from '../types';
 
 // Helper to create a fresh client every time. 
 // If accessToken is provided, we inject it into the global headers to ensure RLS works for Storage/DB.
@@ -173,11 +174,11 @@ export const inviteCollaborator = async (
     if (!client) return { success: false, error: "Client error" };
 
     try {
-        console.log("Inviting email (via find_user_by_email):", email);
+        console.log("Inviting email (via lookup_user_by_email):", email);
         
-        // USA NUEVA FUNCIÓN 'find_user_by_email' con parámetro 'user_email'
-        // Esto evita conflictos de caché con la función anterior.
-        const { data: userId, error: rpcError } = await client.rpc('find_user_by_email', { user_email: email });
+        // USA NUEVA FUNCIÓN 'lookup_user_by_email' con parámetro 'email_input'
+        // Esto evita conflictos de caché con las funciones anteriores.
+        const { data: userId, error: rpcError } = await client.rpc('lookup_user_by_email', { email_input: email });
         
         if (rpcError) {
             console.error("RPC Error:", rpcError);
@@ -276,7 +277,133 @@ export const getCollaboratorPermissions = async (
 };
 
 
-// --- CRUD ---
+// --- BOARD / NOTES CRUD ---
+
+export const getPetNotes = async (settings: SupabaseSettings, petId: string, accessToken?: string): Promise<PetNote[]> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return [];
+
+    const { data, error } = await client
+        .from('pet_notes')
+        .select(`
+            *,
+            profiles ( full_name, email )
+        `)
+        .eq('pet_id', petId)
+        .order('created_at', { ascending: false });
+
+    if (error) {
+        console.error("Error fetching notes:", error);
+        return [];
+    }
+    return data as unknown as PetNote[];
+};
+
+export const createPetNote = async (
+    settings: SupabaseSettings, 
+    petId: string, 
+    userId: string, 
+    content: string, 
+    mentions: string[] = [], 
+    accessToken?: string
+): Promise<PetNote | null> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return null;
+
+    const { data, error } = await client
+        .from('pet_notes')
+        .insert({
+            pet_id: petId,
+            user_id: userId,
+            content: content,
+            mentions: mentions
+        })
+        .select(`*, profiles(full_name, email)`)
+        .single();
+
+    if (error) {
+        console.error("Error creating note:", error);
+        // Throw error to allow UI to catch it and display the message
+        throw new Error(error.message || JSON.stringify(error));
+    }
+    return data as unknown as PetNote;
+};
+
+export const deletePetNote = async (settings: SupabaseSettings, noteId: string, accessToken?: string): Promise<boolean> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return false;
+
+    // STRATEGY: Delete and Select. 
+    // If the Row Level Security (RLS) policy prevents deletion, Supabase returns an empty array for 'data' 
+    // instead of an error, but NO rows are actually deleted. 
+    // By checking if 'data' contains the deleted row, we can confirm success.
+    const { data, error } = await client
+        .from('pet_notes')
+        .delete()
+        .eq('id', noteId)
+        .select();
+
+    if (error) {
+        console.error("Error deleting note (DB Error):", error);
+        throw new Error(error.message);
+    }
+
+    // If no rows returned, deletion failed (likely filtered out by RLS because user is not owner/author)
+    if (!data || data.length === 0) {
+        console.warn("Delete returned 0 rows. RLS prevented deletion.");
+        throw new Error("No tienes permiso para borrar esta nota o ya no existe.");
+    }
+
+    return true;
+};
+
+export const togglePinNote = async (settings: SupabaseSettings, noteId: string, currentStatus: boolean, accessToken?: string): Promise<boolean> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return false;
+
+    const { error } = await client
+        .from('pet_notes')
+        .update({ is_pinned: !currentStatus })
+        .eq('id', noteId);
+
+    if (error) {
+        console.error("Error toggling pin:", error);
+        throw new Error(error.message);
+    }
+
+    return true;
+};
+
+// --- BOARD ACTIVITY TRACKING ---
+
+export const updateLastSeenBoard = async (settings: SupabaseSettings, petId: string, userId: string, accessToken?: string): Promise<void> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return;
+
+    // Update or Insert last seen timestamp
+    await client.from('user_board_status').upsert({ 
+        user_id: userId, 
+        pet_id: petId, 
+        last_seen_at: new Date().toISOString() 
+    });
+};
+
+export const checkUnreadMessages = async (settings: SupabaseSettings, petId: string, accessToken?: string): Promise<boolean> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return false;
+
+    // Call RPC function to check for messages newer than last_seen_at
+    const { data, error } = await client.rpc('has_unread_board_messages', { p_pet_id: petId });
+    
+    if (error) {
+        // Fail silently on notification check
+        return false;
+    }
+    return !!data;
+};
+
+
+// --- CRUD EVENTS ---
 
 export const saveEventToSupabase = async (event: DogEvent, settings: SupabaseSettings, accessToken?: string): Promise<{ success: boolean; error?: string; photoUrl?: string; newId?: string }> => {
     const client = createFreshClient(settings, accessToken);

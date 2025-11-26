@@ -98,6 +98,22 @@ export interface DogEvent {
   synced: boolean;
 }
 
+// --- BOARD / NOTES ---
+export interface PetNote {
+    id: string;
+    pet_id: string;
+    user_id: string;
+    content: string;
+    is_pinned: boolean;
+    mentions?: string[]; // Array of UUIDs of mentioned users
+    created_at: string;
+    // Joined Data
+    profiles?: {
+        full_name?: string;
+        email: string;
+    }
+}
+
 // Structure expected from Gemini analysis
 export interface AIAnalysisResult {
   title: string;
