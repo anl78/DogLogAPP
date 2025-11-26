@@ -3,6 +3,10 @@ import { createClient } from '@supabase/supabase-js';
 import { AIAnalysisResult, HealthStatus, RecordType, SupabaseSettings, DogEvent, ChatMessage } from "../types";
 import { searchEvents } from "./supabaseService";
 
+// --- CONFIGURATION ---
+// Priority list: Latest & Fastest -> Stable Backup -> Legacy Workhorse
+const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+
 const SYSTEM_INSTRUCTION = `
 Eres un asistente veterinario experto. Tu tarea es analizar la transcripción o el audio de un dueño de perro describiendo un evento.
 Debes extraer información estructurada para rellenar una tabla de seguimiento de Notion/Supabase.
@@ -85,6 +89,56 @@ async function getGeminiApiKey(settings: SupabaseSettings, accessToken?: string)
     return data.value;
 }
 
+// --- HELPER: Robust Generation with Fallback & Retry ---
+async function generateWithFallback(
+    apiKey: string,
+    contents: any,
+    baseConfig: any
+): Promise<any> {
+    const ai = new GoogleGenAI({ apiKey });
+    let lastError: any;
+
+    for (const model of FALLBACK_MODELS) {
+        // Retry loop for transient errors (503, 429) within the same model
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+                // console.log(`Attempting with model: ${model} (Try ${attempt + 1})`);
+                const response = await ai.models.generateContent({
+                    model: model,
+                    contents: contents,
+                    config: baseConfig
+                });
+                return response;
+            } catch (error: any) {
+                lastError = error;
+                
+                // Check for fatal errors (400 Bad Request, 401 Unauthorized, 404 Not Found)
+                // These won't be fixed by retrying or switching models.
+                const status = error.status || error.response?.status;
+                if (status === 400 || status === 401 || status === 403 || status === 404) {
+                    throw error;
+                }
+
+                // If 503 (Service Unavailable) or 429 (Too Many Requests), wait and retry
+                const isTransient = status === 503 || status === 429 || error.message?.includes('Overloaded');
+                
+                if (isTransient) {
+                    // Exponential backoff: 1s, 2s...
+                    const delay = Math.pow(2, attempt) * 1000;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    continue; // Try next attempt loop
+                }
+
+                // If unknown error, break attempt loop and try next model
+                break; 
+            }
+        }
+    }
+
+    throw lastError || new Error("Todos los modelos de IA están saturados o fallaron.");
+}
+
+
 export const analyzeInput = async (
   textInput: string,
   imageParts: string[] = [],
@@ -93,7 +147,6 @@ export const analyzeInput = async (
 ): Promise<AIAnalysisResult> => {
   
   const apiKey = await getGeminiApiKey(settings, accessToken);
-  const ai = new GoogleGenAI({ apiKey });
   
   const now = new Date();
   const contextPrompt = `Momento actual del sistema: ${now.toLocaleString('es-ES')}. Analiza esto: "${textInput}"`;
@@ -110,10 +163,7 @@ export const analyzeInput = async (
     });
   });
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: { parts },
-    config: {
+  const config = {
       systemInstruction: SYSTEM_INSTRUCTION,
       responseMimeType: "application/json",
       responseSchema: {
@@ -138,8 +188,9 @@ export const analyzeInput = async (
         },
         required: ["title", "recordType"]
       }
-    }
-  });
+  };
+
+  const response = await generateWithFallback(apiKey, { parts }, config);
 
   if (!response.text) {
       throw new Error("No analysis generated");
@@ -154,51 +205,50 @@ export const analyzeImage = async (
     accessToken?: string
 ): Promise<AIAnalysisResult> => {
     const apiKey = await getGeminiApiKey(settings, accessToken);
-    const ai = new GoogleGenAI({ apiKey });
     
     const cleanBase64 = imageBase64.split(',')[1] || imageBase64;
     const now = new Date();
 
-    const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: {
-            parts: [
-                {
-                    inlineData: {
-                        mimeType: "image/jpeg",
-                        data: cleanBase64
-                    }
-                },
-                {
-                    text: `Momento actual: ${now.toLocaleString('es-ES')}. Analiza visualmente esta imagen. Identifica qué es (Caca, Vómito, Comida, etc.). Si es CACA, califícala como Buena/Regular/Mala según su aspecto saludable y ponlo en el título.`
+    const contents = {
+        parts: [
+            {
+                inlineData: {
+                    mimeType: "image/jpeg",
+                    data: cleanBase64
                 }
-            ]
-        },
-        config: {
-            systemInstruction: SYSTEM_INSTRUCTION,
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING, description: "Título (Ej: 'Mala - Diarrea')" },
-                recordType: {
-                    type: Type.STRING,
-                    enum: Object.values(RecordType),
-                },
-                healthStatus: { 
-                  type: Type.STRING, 
-                  enum: Object.values(HealthStatus),
-                  nullable: true
-                },
-                description: { type: Type.STRING, description: "Descripción visual detallada del experto" },
-                weight: { type: Type.NUMBER, description: "Peso en kg", nullable: true },
-                date: { type: Type.STRING, description: "Fecha YYYY-MM-DD", nullable: true },
-                time: { type: Type.STRING, description: "Hora HH:MM", nullable: true },
-              },
-              required: ["title", "recordType"]
+            },
+            {
+                text: `Momento actual: ${now.toLocaleString('es-ES')}. Analiza visualmente esta imagen. Identifica qué es (Caca, Vómito, Comida, etc.). Si es CACA, califícala como Buena/Regular/Mala según su aspecto saludable y ponlo en el título.`
             }
+        ]
+    };
+
+    const config = {
+        systemInstruction: SYSTEM_INSTRUCTION,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING, description: "Título (Ej: 'Mala - Diarrea')" },
+            recordType: {
+                type: Type.STRING,
+                enum: Object.values(RecordType),
+            },
+            healthStatus: { 
+              type: Type.STRING, 
+              enum: Object.values(HealthStatus),
+              nullable: true
+            },
+            description: { type: Type.STRING, description: "Descripción visual detallada del experto" },
+            weight: { type: Type.NUMBER, description: "Peso en kg", nullable: true },
+            date: { type: Type.STRING, description: "Fecha YYYY-MM-DD", nullable: true },
+            time: { type: Type.STRING, description: "Hora HH:MM", nullable: true },
+          },
+          required: ["title", "recordType"]
         }
-    });
+    };
+
+    const response = await generateWithFallback(apiKey, contents, config);
 
     if (!response.text) {
         throw new Error("No analysis generated from image");
@@ -213,49 +263,48 @@ export const analyzeAudio = async (
     accessToken?: string
 ): Promise<AIAnalysisResult> => {
     const apiKey = await getGeminiApiKey(settings, accessToken);
-    const ai = new GoogleGenAI({ apiKey });
     const now = new Date();
 
-    const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: {
-            parts: [
-                {
-                    inlineData: {
-                        mimeType: "audio/mp3",
-                        data: audioBase64
-                    }
-                },
-                {
-                    text: `Momento actual: ${now.toLocaleString('es-ES')}. Analiza este audio y extrae los datos. Si mencionan "ayer", "hace una hora", etc, calcula la fecha/hora exacta.`
+    const contents = {
+        parts: [
+            {
+                inlineData: {
+                    mimeType: "audio/mp3",
+                    data: audioBase64
                 }
-            ]
-        },
-        config: {
-            systemInstruction: SYSTEM_INSTRUCTION,
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING, description: "Breve título del evento" },
-                recordType: {
-                    type: Type.STRING,
-                    enum: Object.values(RecordType),
-                },
-                healthStatus: { 
-                  type: Type.STRING, 
-                  enum: Object.values(HealthStatus),
-                  nullable: true
-                },
-                description: { type: Type.STRING, description: "Descripción detallada" },
-                weight: { type: Type.NUMBER, description: "Peso en kg", nullable: true },
-                date: { type: Type.STRING, description: "Fecha YYYY-MM-DD", nullable: true },
-                time: { type: Type.STRING, description: "Hora HH:MM", nullable: true },
-              },
-              required: ["title", "recordType"]
+            },
+            {
+                text: `Momento actual: ${now.toLocaleString('es-ES')}. Analiza este audio y extrae los datos. Si mencionan "ayer", "hace una hora", etc, calcula la fecha/hora exacta.`
             }
+        ]
+    };
+
+    const config = {
+        systemInstruction: SYSTEM_INSTRUCTION,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING, description: "Breve título del evento" },
+            recordType: {
+                type: Type.STRING,
+                enum: Object.values(RecordType),
+            },
+            healthStatus: { 
+              type: Type.STRING, 
+              enum: Object.values(HealthStatus),
+              nullable: true
+            },
+            description: { type: Type.STRING, description: "Descripción detallada" },
+            weight: { type: Type.NUMBER, description: "Peso en kg", nullable: true },
+            date: { type: Type.STRING, description: "Fecha YYYY-MM-DD", nullable: true },
+            time: { type: Type.STRING, description: "Hora HH:MM", nullable: true },
+          },
+          required: ["title", "recordType"]
         }
-    });
+    };
+
+    const response = await generateWithFallback(apiKey, contents, config);
 
     if (!response.text) {
         throw new Error("No analysis generated from audio");
@@ -271,50 +320,49 @@ export const analyzeFile = async (
     accessToken?: string
 ): Promise<AIAnalysisResult> => {
     const apiKey = await getGeminiApiKey(settings, accessToken);
-    const ai = new GoogleGenAI({ apiKey });
     const cleanBase64 = base64Data.split(',')[1] || base64Data;
     const now = new Date();
 
-    const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: {
-            parts: [
-                {
-                    inlineData: {
-                        mimeType: mimeType,
-                        data: cleanBase64
-                    }
-                },
-                {
-                    text: `Momento actual: ${now.toLocaleString('es-ES')}. Analiza este documento o imagen adjunta. Extrae la información más relevante para un registro veterinario. Identifica si es un informe médico, una analítica, una foto de un síntoma, etc. Si el documento contiene una fecha impresa, ÚSALA como la fecha del evento.`
+    const contents = {
+        parts: [
+            {
+                inlineData: {
+                    mimeType: mimeType,
+                    data: cleanBase64
                 }
-            ]
-        },
-        config: {
-            systemInstruction: SYSTEM_INSTRUCTION,
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING, description: "Título (Ej: 'Informe Analítica', 'Foto Herida')" },
-                recordType: {
-                    type: Type.STRING,
-                    enum: Object.values(RecordType),
-                },
-                healthStatus: { 
-                  type: Type.STRING, 
-                  enum: Object.values(HealthStatus),
-                  nullable: true
-                },
-                description: { type: Type.STRING, description: "Resumen detallado del contenido del archivo" },
-                weight: { type: Type.NUMBER, description: "Peso en kg si aparece en el documento", nullable: true },
-                date: { type: Type.STRING, description: "Fecha del documento o evento YYYY-MM-DD", nullable: true },
-                time: { type: Type.STRING, description: "Hora HH:MM", nullable: true },
-              },
-              required: ["title", "recordType"]
+            },
+            {
+                text: `Momento actual: ${now.toLocaleString('es-ES')}. Analiza este documento o imagen adjunta. Extrae la información más relevante para un registro veterinario. Identifica si es un informe médico, una analítica, una foto de un síntoma, etc. Si el documento contiene una fecha impresa, ÚSALA como la fecha del evento.`
             }
+        ]
+    };
+
+    const config = {
+        systemInstruction: SYSTEM_INSTRUCTION,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING, description: "Título (Ej: 'Informe Analítica', 'Foto Herida')" },
+            recordType: {
+                type: Type.STRING,
+                enum: Object.values(RecordType),
+            },
+            healthStatus: { 
+              type: Type.STRING, 
+              enum: Object.values(HealthStatus),
+              nullable: true
+            },
+            description: { type: Type.STRING, description: "Resumen detallado del contenido del archivo" },
+            weight: { type: Type.NUMBER, description: "Peso en kg si aparece en el documento", nullable: true },
+            date: { type: Type.STRING, description: "Fecha del documento o evento YYYY-MM-DD", nullable: true },
+            time: { type: Type.STRING, description: "Hora HH:MM", nullable: true },
+          },
+          required: ["title", "recordType"]
         }
-    });
+    };
+
+    const response = await generateWithFallback(apiKey, contents, config);
 
     if (!response.text) {
         throw new Error("No analysis generated from file");
@@ -360,7 +408,6 @@ export const consultAssistant = async (
 ): Promise<{ text: string, events?: DogEvent[] }> => {
     
     const apiKey = await getGeminiApiKey(settings, accessToken);
-    const ai = new GoogleGenAI({ apiKey });
     const today = new Date().toISOString().split('T')[0];
 
     // Build contents from history
@@ -376,14 +423,13 @@ export const consultAssistant = async (
         contents[lastMessageIndex].parts[0].text = `Hoy es ${today}. ${originalText}`;
     }
 
-    let response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: contents,
-        config: {
-            systemInstruction: CONSULTANT_INSTRUCTION,
-            tools: [{ functionDeclarations: [queryEventsTool] }]
-        }
-    });
+    const config = {
+        systemInstruction: CONSULTANT_INSTRUCTION,
+        tools: [{ functionDeclarations: [queryEventsTool] }]
+    };
+
+    // 1. Initial Call (Uses Fallback)
+    let response = await generateWithFallback(apiKey, contents, config);
 
     let foundEvents: DogEvent[] = [];
     let functionCalls = response.functionCalls;
@@ -431,12 +477,11 @@ export const consultAssistant = async (
                 { role: 'user', parts: functionResponseParts }
             ];
 
-            response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: newContents,
-                config: {
-                    systemInstruction: CONSULTANT_INSTRUCTION
-                }
+            // 2. Second Call (Tool Result - Uses Fallback)
+            // Note: We pass the config again but without tool definition technically needed, 
+            // but keeping it maintains context instructions.
+            response = await generateWithFallback(apiKey, newContents, {
+                systemInstruction: CONSULTANT_INSTRUCTION
             });
         }
     }
