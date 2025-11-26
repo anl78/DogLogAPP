@@ -12,6 +12,7 @@ import AIQueryView from './components/AIQueryView';
 import MigrationPanel from './components/MigrationPanel';
 import TeamManager from './components/TeamManager';
 import Auth from './components/Auth';
+import ImageViewer from './components/ImageViewer';
 
 const PAGE_SIZE = 25;
 
@@ -60,6 +61,7 @@ const App: React.FC = () => {
   const [creatingPet, setCreatingPet] = useState(false);
 
   const [view, setView] = useState<'home' | 'add' | 'settings' | 'consult'>('home');
+  const [fullScreenImage, setFullScreenImage] = useState<string | null>(null);
   
   // --- Auth & Pet Loading Effect ---
   useEffect(() => {
@@ -542,7 +544,16 @@ const App: React.FC = () => {
                         {ev.healthStatus && <span className={`px-2 py-1 rounded-full border ${HEALTH_STATUS_COLORS[ev.healthStatus]}`}>{ev.healthStatus}</span>}
                         <span className="px-2 py-1 bg-slate-50 border rounded-full">{ev.date} · {ev.time}</span>
                     </div>
-                    {(ev.photoBase64 || ev.photoUrl) && <img src={ev.photoBase64 || ev.photoUrl} className="w-full h-48 object-cover rounded-lg mb-3 bg-slate-100"/>}
+                    {(ev.photoBase64 || ev.photoUrl) && (
+                        <img 
+                            src={ev.photoBase64 || ev.photoUrl} 
+                            className="w-full h-48 object-cover rounded-lg mb-3 bg-slate-100"
+                            onClick={(e) => {
+                                e.stopPropagation(); // Stop opening edit view
+                                setFullScreenImage(ev.photoBase64 || ev.photoUrl || null);
+                            }}
+                        />
+                    )}
                     <p className="text-sm text-slate-600 line-clamp-3 whitespace-pre-wrap">{ev.description}</p>
                 </div>
             ))}
@@ -731,6 +742,8 @@ const App: React.FC = () => {
         )}
         {view === 'settings' && renderSettings()}
         <Navbar currentView={view === 'add' && inputMethod !== 'menu' ? 'add' : view} setView={(v) => { setView(v); if(v === 'add') setInputMethod('menu'); }} />
+        
+        <ImageViewer src={fullScreenImage} onClose={() => setFullScreenImage(null)} />
     </div>
   );
 };

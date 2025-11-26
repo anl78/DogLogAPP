@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { DogEvent, HealthStatus, RecordType } from '../types';
 import { HEALTH_STATUS_COLORS, Icons } from '../constants';
+import ImageViewer from './ImageViewer';
 
 interface EventFormProps {
   initialData?: Partial<DogEvent>;
@@ -43,6 +44,7 @@ const EventForm: React.FC<EventFormProps> = ({
   
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [viewImage, setViewImage] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialData) {
@@ -194,6 +196,7 @@ const EventForm: React.FC<EventFormProps> = ({
   const previewImage = formData.photoBase64 || formData.photoUrl;
 
   return (
+    <>
     <form onSubmit={handleSubmit} className="space-y-5 pb-24 px-1">
       {!canEdit && (
           <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg flex items-center gap-2">
@@ -318,13 +321,29 @@ const EventForm: React.FC<EventFormProps> = ({
                 <input type="file" accept="image/*" onChange={(e) => handleFileChange(e, 'photo')} className="hidden" disabled={!canEdit} />
             </label>
             {previewImage && (
-                <div className="mt-2 relative w-24 h-24 rounded-lg overflow-hidden border border-slate-200">
-                    <img src={previewImage} alt="Preview" className="w-full h-full object-cover" />
+                <div className="mt-2 relative w-24 h-24 rounded-lg overflow-hidden border border-slate-200 group">
+                    <img 
+                        src={previewImage} 
+                        alt="Preview" 
+                        className="w-full h-full object-cover cursor-pointer" 
+                        onClick={() => setViewImage(previewImage)}
+                    />
+                    
+                    {/* View Button (Eye) */}
+                    <button 
+                        type="button"
+                        onClick={() => setViewImage(previewImage)}
+                        className="absolute top-0 right-0 bg-black/50 text-white p-1 rounded-bl-lg"
+                    >
+                        <Icons.Eye className="w-3 h-3" />
+                    </button>
+
+                    {/* Delete Button */}
                     {canEdit && (
                         <button 
                             type="button"
                             onClick={() => setFormData(prev => ({...prev, photoBase64: undefined, photoUrl: undefined}))}
-                            className="absolute top-0 right-0 bg-black/50 text-white p-1 rounded-bl-lg"
+                            className="absolute bottom-0 right-0 bg-red-500 text-white p-1 rounded-tl-lg"
                         >
                             <Icons.Trash className="w-3 h-3" />
                         </button>
@@ -414,6 +433,8 @@ const EventForm: React.FC<EventFormProps> = ({
         )}
       </div>
     </form>
+    <ImageViewer src={viewImage} onClose={() => setViewImage(null)} />
+    </>
   );
 };
 
