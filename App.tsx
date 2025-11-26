@@ -25,12 +25,10 @@ const DEFAULT_OWNER_PERMISSIONS: CollaboratorPermissions = {
 // Declare globals injected by Vite define
 declare const __SUPABASE_URL__: string;
 declare const __SUPABASE_KEY__: string;
-declare const __API_KEY__: string;
 
 // Fallbacks for dev environment where Vite define might fail
 const FALLBACK_URL = "https://nvnmlausdsexvmcrnzxc.supabase.co";
 const FALLBACK_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im52bm1sYXVzZHNleHZtY3JuenhjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM2NTE5MjAsImV4cCI6MjA3OTIyNzkyMH0.i2ddyT9GvT70bkIHqSW_whf9UMqqkNnAWawC4k91W0c";
-const FALLBACK_GEMINI_KEY = "AIzaSyDRs92kUFJSJhQFgsbq7zgmBAgSYDi2Iuw";
 
 const App: React.FC = () => {
   // --- Environment Variables (Injected Globals) ---
@@ -43,16 +41,6 @@ const App: React.FC = () => {
   if (!envSupabaseUrl || envSupabaseUrl === '""') envSupabaseUrl = FALLBACK_URL;
   if (!envSupabaseKey || envSupabaseKey === '""') envSupabaseKey = FALLBACK_KEY;
   
-  // Also expose API Key for services via process.env shim if needed, or directly
-  // Fix: Use fallback if __API_KEY__ is missing
-  const apiKeyVal = typeof __API_KEY__ !== 'undefined' && __API_KEY__ !== '""' ? __API_KEY__ : FALLBACK_GEMINI_KEY;
-
-  if (typeof process === 'undefined') {
-      (window as any).process = { env: { API_KEY: apiKeyVal } };
-  } else {
-      process.env.API_KEY = apiKeyVal;
-  }
-
   // --- State ---
   const [settings] = useState<SupabaseSettings>({ 
       supabaseUrl: envSupabaseUrl, 
@@ -280,7 +268,6 @@ const App: React.FC = () => {
         
         // Logic Fix: ONLY assign userId if it's a NEW event (missing ID).
         // If updating (has ID), we keep existing userId to avoid ownership theft.
-        // We verify emptiness of userId as well to be safe.
         if ((!eventToSave.id || !eventToSave.userId) && session?.user?.id) {
             eventToSave.userId = session.user.id;
         }
@@ -321,9 +308,6 @@ const App: React.FC = () => {
   };
 
   const handleDeleteEvent = async (event: DogEvent) => {
-      // Permission check handled in UI, but double check here logic would be complex without full context
-      // relying on RLS and UI props.
-      
       setIsLoading(true);
       try {
           if (settings.supabaseUrl && settings.supabaseKey) {
@@ -435,7 +419,8 @@ const App: React.FC = () => {
     });
   };
 
-  // --- AI HANDLERS ---
+  // --- AI HANDLERS (Updated with Settings & Token) ---
+  
   const mapAnalysisToDraft = (result: AIAnalysisResult, photo?: string, file?: string, fileName?: string, dateOverride?: Date | null) => {
       let d = result.date || new Date().toISOString().split('T')[0];
       let t = result.time || getCurrentTime();
@@ -452,35 +437,53 @@ const App: React.FC = () => {
 
   const handleAudioCaptured = async (b64: string) => {
       setAiProcessing(true);
-      try { const r = await analyzeAudio(b64); mapAnalysisToDraft(r); setInputMethod('manual'); } 
-      catch { alert("Error audio"); } finally { setAiProcessing(false); }
+      try { 
+          const r = await analyzeAudio(b64, settings, session?.access_token); 
+          mapAnalysisToDraft(r); 
+          setInputMethod('manual'); 
+      } 
+      catch (e: any) { alert(`Error audio: ${e.message}`); } 
+      finally { setAiProcessing(false); }
   };
+
   const handleChatSubmit = async () => {
       if(!chatInput.trim()) return; setAiProcessing(true);
-      try { const r = await analyzeInput(chatInput); mapAnalysisToDraft(r); setInputMethod('manual'); setChatInput(''); }
-      catch { alert("Error texto"); } finally { setAiProcessing(false); }
+      try { 
+          const r = await analyzeInput(chatInput, [], settings, session?.access_token); 
+          mapAnalysisToDraft(r); 
+          setInputMethod('manual'); 
+          setChatInput(''); 
+      }
+      catch (e: any) { alert(`Error texto: ${e.message}`); } 
+      finally { setAiProcessing(false); }
   };
+
   const handleImageCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const f = e.target.files?.[0]; if(!f) return; setAiProcessing(true);
       try { 
           const date = await getExifDate(f);
           const b64 = await resizeImage(f); 
-          const r = await analyzeImage(b64); 
+          // Pass settings and token
+          const r = await analyzeImage(b64, settings, session?.access_token); 
           mapAnalysisToDraft(r, b64, undefined, undefined, date); 
           setInputMethod('manual'); 
       }
-      catch { alert("Error imagen"); } finally { setAiProcessing(false); }
+      catch (e: any) { alert(`Error imagen: ${e.message}`); } 
+      finally { setAiProcessing(false); }
   };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const f = e.target.files?.[0]; if(!f) return; setAiProcessing(true);
       try {
           let b64 = ''; let mime = f.type; let date = null;
           if(f.type.startsWith('image/')) { date = await getExifDate(f); b64 = await resizeImage(f); mime = 'image/jpeg'; }
           else { b64 = await new Promise<string>(r => { const reader=new FileReader(); reader.onload=()=>r(reader.result as string); reader.readAsDataURL(f); }); }
-          const res = await analyzeFile(b64, mime);
+          // Pass settings and token
+          const res = await analyzeFile(b64, mime, settings, session?.access_token);
           mapAnalysisToDraft(res, mime === 'image/jpeg' ? b64 : undefined, mime !== 'image/jpeg' ? b64 : undefined, f.name, date);
           setInputMethod('manual');
-      } catch { alert("Error archivo"); } finally { setAiProcessing(false); }
+      } catch (e: any) { alert(`Error archivo: ${e.message}`); } 
+      finally { setAiProcessing(false); }
   };
 
   // --- PERMISSION HELPERS FOR UI ---

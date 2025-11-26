@@ -1,17 +1,7 @@
-
 import { GoogleGenAI, Type, FunctionDeclaration } from "@google/genai";
+import { createClient } from '@supabase/supabase-js';
 import { AIAnalysisResult, HealthStatus, RecordType, SupabaseSettings, DogEvent, ChatMessage } from "../types";
 import { searchEvents } from "./supabaseService";
-
-// Injected by Vite
-declare const __API_KEY__: string;
-
-const getApiKey = () => {
-    // Try process.env first (if shimmed), then direct global injection
-    const key = process.env.API_KEY || (typeof __API_KEY__ !== 'undefined' ? __API_KEY__ : undefined);
-    if (!key || key === "PON_AQUI_TU_API_KEY_DE_GEMINI") return undefined;
-    return key;
-};
 
 const SYSTEM_INSTRUCTION = `
 Eres un asistente veterinario experto. Tu tarea es analizar la transcripción o el audio de un dueño de perro describiendo un evento.
@@ -59,14 +49,52 @@ REGLAS:
 5. Mantén el contexto de la conversación. Si el usuario dice "¿Y de vómitos?", se refiere al mismo periodo de tiempo del que hablabais antes.
 `;
 
+// --- HELPER: Get API Key Securely ---
+async function getGeminiApiKey(settings: SupabaseSettings, accessToken?: string): Promise<string> {
+    // 1. Try Production Env Var (Vercel)
+    try {
+        // @ts-ignore
+        const envKey = import.meta.env.VITE_GEMINI_API_KEY;
+        if (envKey && envKey.length > 10) return envKey;
+    } catch (e) {
+        // Ignore error if env not available
+    }
+
+    // 2. Fallback: Fetch from Supabase DB (Development / Local)
+    if (!settings.supabaseUrl || !settings.supabaseKey) {
+        throw new Error("No hay configuración de Supabase para recuperar la clave API.");
+    }
+
+    const client = createClient(settings.supabaseUrl, settings.supabaseKey, {
+        global: {
+            headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined
+        }
+    });
+
+    const { data, error } = await client
+        .from('app_secrets')
+        .select('value')
+        .eq('key_name', 'GEMINI_API_KEY')
+        .single();
+
+    if (error || !data?.value) {
+        console.error("Error fetching API Key:", error);
+        throw new Error("No se encontró la API KEY de Gemini. Configura 'VITE_GEMINI_API_KEY' en Vercel o añade 'GEMINI_API_KEY' en la tabla 'app_secrets'.");
+    }
+
+    return data.value;
+}
+
 export const analyzeInput = async (
   textInput: string,
-  imageParts: string[] = []
+  imageParts: string[] = [],
+  settings: SupabaseSettings,
+  accessToken?: string
 ): Promise<AIAnalysisResult> => {
-  const apiKey = getApiKey();
-  if (!apiKey) throw new Error("API Key missing");
-
+  
+  const apiKey = await getGeminiApiKey(settings, accessToken);
   const ai = new GoogleGenAI({ apiKey });
+  
   const now = new Date();
   const contextPrompt = `Momento actual del sistema: ${now.toLocaleString('es-ES')}. Analiza esto: "${textInput}"`;
 
@@ -120,11 +148,14 @@ export const analyzeInput = async (
   return JSON.parse(response.text) as AIAnalysisResult;
 };
 
-export const analyzeImage = async (imageBase64: string): Promise<AIAnalysisResult> => {
-    const apiKey = getApiKey();
-    if (!apiKey) throw new Error("API Key missing");
-  
+export const analyzeImage = async (
+    imageBase64: string, 
+    settings: SupabaseSettings,
+    accessToken?: string
+): Promise<AIAnalysisResult> => {
+    const apiKey = await getGeminiApiKey(settings, accessToken);
     const ai = new GoogleGenAI({ apiKey });
+    
     const cleanBase64 = imageBase64.split(',')[1] || imageBase64;
     const now = new Date();
 
@@ -176,10 +207,12 @@ export const analyzeImage = async (imageBase64: string): Promise<AIAnalysisResul
     return JSON.parse(response.text) as AIAnalysisResult;
 }
 
-export const analyzeAudio = async (audioBase64: string): Promise<AIAnalysisResult> => {
-    const apiKey = getApiKey();
-    if (!apiKey) throw new Error("API Key missing");
-  
+export const analyzeAudio = async (
+    audioBase64: string,
+    settings: SupabaseSettings,
+    accessToken?: string
+): Promise<AIAnalysisResult> => {
+    const apiKey = await getGeminiApiKey(settings, accessToken);
     const ai = new GoogleGenAI({ apiKey });
     const now = new Date();
 
@@ -231,10 +264,13 @@ export const analyzeAudio = async (audioBase64: string): Promise<AIAnalysisResul
     return JSON.parse(response.text) as AIAnalysisResult;
 }
 
-export const analyzeFile = async (base64Data: string, mimeType: string): Promise<AIAnalysisResult> => {
-    const apiKey = getApiKey();
-    if (!apiKey) throw new Error("API Key missing");
-  
+export const analyzeFile = async (
+    base64Data: string, 
+    mimeType: string,
+    settings: SupabaseSettings,
+    accessToken?: string
+): Promise<AIAnalysisResult> => {
+    const apiKey = await getGeminiApiKey(settings, accessToken);
     const ai = new GoogleGenAI({ apiKey });
     const cleanBase64 = base64Data.split(',')[1] || base64Data;
     const now = new Date();
@@ -319,12 +355,11 @@ const queryEventsTool: FunctionDeclaration = {
 export const consultAssistant = async (
     history: ChatMessage[], 
     settings: SupabaseSettings,
-    petId: string, // REQUIRED for context
-    accessToken?: string // REQUIRED for RLS
+    petId: string, 
+    accessToken?: string 
 ): Promise<{ text: string, events?: DogEvent[] }> => {
-    const apiKey = getApiKey();
-    if (!apiKey) throw new Error("API Key missing");
-
+    
+    const apiKey = await getGeminiApiKey(settings, accessToken);
     const ai = new GoogleGenAI({ apiKey });
     const today = new Date().toISOString().split('T')[0];
 
@@ -334,15 +369,13 @@ export const consultAssistant = async (
         parts: [{ text: msg.text }]
     }));
 
-    // Inject "Today is..." context into the LAST message (the user's current query)
-    // This allows the model to calculate relative dates (yesterday, last week) correctly at every turn.
+    // Inject context
     const lastMessageIndex = contents.length - 1;
     if (lastMessageIndex >= 0 && contents[lastMessageIndex].role === 'user') {
         const originalText = contents[lastMessageIndex].parts[0].text;
         contents[lastMessageIndex].parts[0].text = `Hoy es ${today}. ${originalText}`;
     }
 
-    // Step 1: Send full history with Tool Definition
     let response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: contents,
@@ -357,13 +390,11 @@ export const consultAssistant = async (
 
     // Step 2: Handle Function Calls (if any)
     if (functionCalls && functionCalls.length > 0) {
-        const call = functionCalls[0]; // Assume single tool call for simplicity
+        const call = functionCalls[0]; 
         
         if (call.name === 'query_events') {
             const args: any = call.args;
-            // Execute Supabase Query
             try {
-                // IMPORTANT: Pass petId and accessToken to ensure RLS compliance and context
                 foundEvents = await searchEvents({
                     recordType: args.recordType,
                     startDate: args.startDate,
@@ -375,8 +406,6 @@ export const consultAssistant = async (
                 console.error("Supabase Search Error", e);
             }
 
-            // Step 3: Send Tool Response back to Gemini
-            // We minimize the data sent back to tokens, sending essential fields
             const minimalEvents = foundEvents.map(e => ({
                 date: e.date,
                 time: e.time,
@@ -396,8 +425,6 @@ export const consultAssistant = async (
                 }
             ];
 
-            // Construct new history for the second turn:
-            // History -> Model Call (Tool Request) -> User (Tool Response)
             const newContents = [
                 ...contents,
                 { role: 'model', parts: response.candidates![0].content.parts },
