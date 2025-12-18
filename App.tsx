@@ -1,10 +1,11 @@
 
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { DogEvent, SupabaseSettings, HealthStatus, AIAnalysisResult, RecordType, Pet, CollaboratorPermissions } from './types';
+import { DogEvent, SupabaseSettings, HealthStatus, AIAnalysisResult, RecordType, Pet, CollaboratorPermissions, NotionSettings } from './types';
 import { saveEventToSupabase, testSupabaseConnection, searchEvents, deleteEvent, getUserPets, createPet, getCollaboratorPermissions, checkUnreadMessages } from './services/supabaseService';
+import { sendToNotion } from './services/notionService';
 import { analyzeAudio, analyzeInput, analyzeImage, analyzeFile } from './services/geminiService';
-import { HEALTH_STATUS_COLORS, Icons } from './constants';
+import { HEALTH_STATUS_COLORS, Icons, getPoopScoreColor } from './constants';
 import Navbar from './components/Navbar';
 import EventForm from './components/EventForm';
 import AudioRecorder from './components/AudioRecorder';
@@ -12,6 +13,8 @@ import AIQueryView from './components/AIQueryView';
 import MigrationPanel from './components/MigrationPanel';
 import TeamManager from './components/TeamManager';
 import BoardView from './components/BoardView';
+import StatsView from './components/StatsView';
+import DashboardView from './components/DashboardView'; // Imported
 import Auth from './components/Auth';
 import ImageViewer from './components/ImageViewer';
 
@@ -49,6 +52,17 @@ const App: React.FC = () => {
       supabaseKey: envSupabaseKey 
   });
 
+  const [notionSettings, setNotionSettings] = useState<NotionSettings>({
+      apiKey: localStorage.getItem('NOTION_API_KEY') || '',
+      databaseId: localStorage.getItem('NOTION_DB_ID') || ''
+  });
+
+  // Save Notion settings to local storage
+  useEffect(() => {
+    localStorage.setItem('NOTION_API_KEY', notionSettings.apiKey);
+    localStorage.setItem('NOTION_DB_ID', notionSettings.databaseId);
+  }, [notionSettings]);
+
   const [session, setSession] = useState<any>(null);
   const [pets, setPets] = useState<Pet[]>([]);
   const [currentPet, setCurrentPet] = useState<Pet | null>(null);
@@ -61,7 +75,8 @@ const App: React.FC = () => {
   const [newPetName, setNewPetName] = useState('');
   const [creatingPet, setCreatingPet] = useState(false);
 
-  const [view, setView] = useState<'home' | 'board' | 'add' | 'settings' | 'consult'>('home');
+  // Added 'dashboard' to the view union type
+  const [view, setView] = useState<'home' | 'board' | 'add' | 'settings' | 'consult' | 'stats' | 'dashboard'>('home');
   const [fullScreenImage, setFullScreenImage] = useState<string | null>(null);
   
   const [hasUnreadMessages, setHasUnreadMessages] = useState(false);
@@ -294,6 +309,7 @@ const App: React.FC = () => {
             eventToSave.userId = session.user.id;
         }
 
+        // 1. SAVE TO SUPABASE
         if (settings.supabaseUrl && settings.supabaseKey) {
             // PASS ACCESS TOKEN
             const result = await saveEventToSupabase(eventToSave, settings, session?.access_token);
@@ -301,6 +317,14 @@ const App: React.FC = () => {
                 eventToSave.synced = true;
                 if (result.newId) eventToSave.id = result.newId;
                 if (result.photoUrl) eventToSave.photoUrl = result.photoUrl;
+
+                // 2. SAVE TO NOTION (If configured and sync successful)
+                if (notionSettings.apiKey && notionSettings.databaseId) {
+                    sendToNotion(eventToSave, notionSettings).catch(e => {
+                        console.error("Error syncing to Notion:", e);
+                        // Optional: Toast error
+                    });
+                }
             } else {
                 throw new Error(result.error);
             }
@@ -453,7 +477,7 @@ const App: React.FC = () => {
       setDraftEvent({
           title: result.title, recordType: result.recordType, healthStatus: result.healthStatus,
           description: result.description, weight: result.weight, date: d, time: t,
-          photoBase64: photo, fileBase64: file, fileName: fileName
+          photoBase64: photo, fileBase64: file, fileName: fileName, poopScore: result.poopScore
       });
   };
 
@@ -562,6 +586,12 @@ const App: React.FC = () => {
                     <h3 className="font-bold text-lg mb-2 pr-12">{ev.title}</h3>
                     <div className="flex flex-wrap gap-2 mb-3 text-xs">
                         {ev.healthStatus && <span className={`px-2 py-1 rounded-full border ${HEALTH_STATUS_COLORS[ev.healthStatus]}`}>{ev.healthStatus}</span>}
+                        {/* SCORE BADGE */}
+                        {ev.recordType === RecordType.POOP && ev.poopScore && (
+                            <span className={`px-2 py-1 rounded-full border font-bold ${getPoopScoreColor(ev.poopScore)}`}>
+                                Score: {ev.poopScore}
+                            </span>
+                        )}
                         <span className="px-2 py-1 bg-slate-50 border rounded-full">{ev.date} · {ev.time}</span>
                     </div>
                     {(ev.photoBase64 || ev.photoUrl) && (
@@ -620,163 +650,120 @@ const App: React.FC = () => {
                     canDelete={calculateCanDelete(draftEvent)}
                 />
             </div>
-            {isLoading && <div className="absolute inset-0 bg-white/80 flex items-center justify-center">Guardando...</div>}
         </div>
       );
   };
 
-  const renderSettings = () => (
-      <div className="h-full bg-slate-50 overflow-y-auto p-6">
-          <h2 className="text-2xl font-bold mb-6">Perfil</h2>
-          <div className="bg-white p-6 rounded-2xl shadow-sm border mb-6">
-              <div className="w-16 h-16 bg-slate-200 rounded-full flex items-center justify-center text-2xl font-bold text-slate-500 mb-4">
-                  {session?.user?.email?.charAt(0).toUpperCase()}
-              </div>
-              <p className="font-bold text-lg">{session?.user?.user_metadata?.full_name || 'Usuario'}</p>
-              <p className="text-slate-500 text-sm mb-4">{session?.user?.email}</p>
-              
-              <div className="border-t pt-4 mt-4">
-                  <p className="text-xs font-bold text-slate-400 uppercase mb-2">Mascota Actual</p>
-                  <div className="flex items-center gap-3 bg-slate-50 p-3 rounded-lg border">
-                       <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-bold">
-                           {currentPet?.name?.charAt(0)}
-                       </div>
-                       <span className="font-bold">{currentPet?.name}</span>
-                  </div>
-              </div>
-          </div>
-          <button onClick={handleLogout} className="w-full py-3 border border-red-200 text-red-600 rounded-xl font-bold mb-6 bg-white">Cerrar Sesión</button>
-          
-          {/* TEAM MANAGEMENT */}
-          {currentPet && session?.user && (
-            <TeamManager 
-                settings={settings}
-                currentPet={currentPet}
-                currentUserId={session.user.id}
-                accessToken={session.access_token}
-            />
-          )}
-
-          <MigrationPanel 
-            supabaseSettings={settings} 
-            currentPet={currentPet} 
-            currentUser={session?.user} 
-          />
-      </div>
-  );
-
-  // --- ROOT RENDER ---
-
-  // 1. Critical Error: Missing Env Vars
-  if (!settings.supabaseUrl || !settings.supabaseKey) {
-      return (
-          <div className="h-full w-full flex flex-col items-center justify-center p-8 text-center bg-red-50">
-              <Icons.AlertTriangle className="w-16 h-16 text-red-500 mb-4" />
-              <h1 className="text-xl font-bold text-red-800 mb-2">Error de Configuración</h1>
-              <p className="text-red-600 text-sm mb-4">
-                  La aplicación no detecta las credenciales de Supabase.
-              </p>
-              <div className="bg-white p-4 rounded-lg border border-red-200 text-left w-full">
-                  <p className="text-xs font-mono text-slate-600 mb-2">Asegúrate de configurar estas variables de entorno en Vercel:</p>
-                  <ul className="list-disc list-inside text-xs font-bold text-slate-800">
-                      <li>VITE_SUPABASE_URL</li>
-                      <li>VITE_SUPABASE_KEY</li>
-                  </ul>
-                  <p className="text-xs font-mono text-slate-500 mt-4 border-t pt-2">
-                      <strong>Nota para Desarrollo Local:</strong><br/>
-                      Debes crear un archivo <code>.env</code> en la raíz del proyecto con estas variables.
-                  </p>
-              </div>
-          </div>
-      );
-  }
-
-  if (authLoading) return <div className="h-full w-full flex items-center justify-center">Cargando...</div>;
-
-  // 2. Auth Screen (Login/Signup)
-  if (!session) {
-      return <Auth settings={settings} onLoginSuccess={() => setAuthLoading(false)} />;
-  }
-
-  // 3. No Pet Screen
-  if (session && !currentPet) {
-      return (
-        <div className="h-full flex flex-col items-center justify-center p-6 text-center bg-slate-50">
-            <h2 className="text-2xl font-bold mb-2 text-slate-800">Bienvenido/a</h2>
-            <p className="text-slate-500 mb-6">No tienes ninguna mascota asociada aún.</p>
-            
-            {/* OPTION A: Collaborator Waiting */}
-            <div className="w-full max-w-xs bg-blue-50 p-4 rounded-2xl border border-blue-100 mb-6">
-                <p className="text-sm text-blue-800 font-bold mb-2">¿Eres cuidador?</p>
-                <p className="text-xs text-blue-600 mb-3">Pide al dueño que te invite a este email:</p>
-                <div className="bg-white p-2 rounded border border-blue-100 text-xs font-mono select-all mb-3">
-                    {session.user.email}
-                </div>
-                <button 
-                    onClick={() => window.location.reload()}
-                    className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-sm"
-                >
-                    🔄 Ya me han invitado (Actualizar)
-                </button>
-            </div>
-
-            <div className="w-full border-t border-slate-200 my-4 relative">
-                <span className="absolute top-[-10px] left-1/2 -translate-x-1/2 bg-slate-50 px-2 text-xs text-slate-400">O crea una nueva</span>
-            </div>
-
-            {/* OPTION B: Owner Creating Pet */}
-            <div className="w-full max-w-xs bg-white p-4 rounded-2xl shadow-sm border mb-4">
-                <input 
-                    type="text" 
-                    placeholder="Nombre de tu Mascota"
-                    value={newPetName}
-                    onChange={e => setNewPetName(e.target.value)}
-                    className="w-full p-3 border rounded-xl mb-4 bg-slate-50"
-                />
-                <button 
-                    onClick={handleCreatePet}
-                    disabled={creatingPet || !newPetName.trim()}
-                    className="w-full bg-slate-800 text-white py-3 rounded-xl font-bold disabled:opacity-50"
-                >
-                    {creatingPet ? 'Creando...' : 'Crear Perfil de Mascota'}
-                </button>
-            </div>
-
-            <button onClick={handleLogout} className="text-red-500 underline text-sm mt-4">Cerrar Sesión</button>
-        </div>
-      );
-  }
-
-  // 4. Main App
   return (
-    <div className="h-full w-full max-w-md mx-auto bg-white shadow-2xl relative overflow-hidden">
-        {view === 'home' && renderHome()}
-        {view === 'add' && renderAdd()}
-        {view === 'board' && (
-            <BoardView 
-                settings={settings}
-                petId={currentPet.id}
-                currentUserId={session.user.id}
-                accessToken={session.access_token}
-            />
-        )}
-        {view === 'consult' && (
-            <AIQueryView 
-                settings={settings} 
-                onEventClick={(ev)=>{setDraftEvent(ev); setInputMethod('manual'); setView('add');}}
-                currentPetId={currentPet.id}
-                accessToken={session.access_token} 
-            />
-        )}
-        {view === 'settings' && renderSettings()}
-        <Navbar 
-            currentView={view === 'add' && inputMethod !== 'menu' ? 'add' : view} 
-            setView={(v) => { setView(v); if(v === 'add') setInputMethod('menu'); }}
-            hasUnread={hasUnreadMessages}
-        />
-        
-        <ImageViewer src={fullScreenImage} onClose={() => setFullScreenImage(null)} />
-    </div>
+    <>
+      {/* Auth Screen */}
+      {authLoading ? (
+         <div className="h-full flex items-center justify-center bg-slate-50"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>
+      ) : !session ? (
+         <Auth settings={settings} onLoginSuccess={() => fetchEvents(true)} />
+      ) : (
+         /* Main App */
+         <div className="h-full w-full relative bg-slate-50">
+            {view === 'home' && renderHome()}
+            {view === 'board' && currentPet && (
+                <BoardView 
+                    settings={settings} 
+                    petId={currentPet.id} 
+                    currentUserId={session.user.id} 
+                    accessToken={session.access_token}
+                />
+            )}
+            {view === 'add' && renderAdd()}
+            {view === 'stats' && currentPet && (
+                 <StatsView settings={settings} petId={currentPet.id} accessToken={session.access_token} />
+            )}
+            {/* Added Dashboard View */}
+            {view === 'dashboard' && currentPet && (
+                <DashboardView settings={settings} petId={currentPet.id} accessToken={session.access_token} />
+            )}
+            {view === 'consult' && (
+                 <AIQueryView 
+                    settings={settings} 
+                    onEventClick={(ev) => { setDraftEvent(ev); setInputMethod('manual'); setView('add'); }}
+                    currentPetId={currentPet?.id || ''}
+                    accessToken={session.access_token}
+                 />
+            )}
+            {view === 'settings' && (
+                 <div className="p-6 overflow-y-auto h-full pb-24">
+                     <h2 className="text-2xl font-bold mb-6">Ajustes</h2>
+                     
+                     {/* Pet Selector */}
+                     <div className="mb-6">
+                        <label className="block text-sm font-medium text-slate-700 mb-2">Mascota Activa</label>
+                        <select 
+                            value={currentPet?.id || ''} 
+                            onChange={(e) => {
+                                const selected = pets.find(p => p.id === e.target.value);
+                                if (selected) {
+                                    setCurrentPet(selected);
+                                    setEvents([]); // Clear old events
+                                }
+                            }}
+                            className="w-full p-3 rounded-xl border border-slate-200 bg-white"
+                        >
+                            {pets.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        </select>
+                     </div>
+
+                     {/* Create Pet Fallback */}
+                     <div className="mb-6 p-4 bg-white rounded-xl border border-slate-200">
+                        <h3 className="font-bold text-sm mb-2">Crear nueva mascota</h3>
+                        <div className="flex gap-2">
+                            <input 
+                                type="text" 
+                                placeholder="Nombre..." 
+                                value={newPetName} 
+                                onChange={e => setNewPetName(e.target.value)}
+                                className="flex-1 p-2 border rounded-lg"
+                            />
+                            <button 
+                                onClick={handleCreatePet} 
+                                disabled={creatingPet || !newPetName.trim()}
+                                className="bg-blue-600 text-white px-4 rounded-lg font-bold text-sm disabled:opacity-50"
+                            >
+                                +
+                            </button>
+                        </div>
+                     </div>
+
+                     {/* Team Manager */}
+                     {currentPet && session?.user && (
+                         <TeamManager 
+                            settings={settings} 
+                            currentPet={currentPet} 
+                            currentUserId={session.user.id} 
+                            accessToken={session.access_token}
+                         />
+                     )}
+
+                     {/* Migration & Tools */}
+                     <MigrationPanel 
+                        supabaseSettings={settings} 
+                        currentPet={currentPet} 
+                        currentUser={session?.user} 
+                        accessToken={session.access_token}
+                     />
+                     
+                     <div className="mt-10 border-t pt-6">
+                        <button onClick={handleLogout} className="w-full py-3 bg-red-100 text-red-600 rounded-xl font-bold">Cerrar Sesión</button>
+                        <p className="text-center text-xs text-slate-400 mt-4">v4.0.0 - Supabase + Gemini + Notion</p>
+                     </div>
+                 </div>
+            )}
+            
+            <Navbar currentView={view} setView={setView} hasUnread={hasUnreadMessages} />
+            
+            {/* Full Screen Image Modal */}
+            <ImageViewer src={fullScreenImage} onClose={() => setFullScreenImage(null)} />
+         </div>
+      )}
+    </>
   );
 };
 

@@ -1,3 +1,6 @@
+
+
+
 import { GoogleGenAI, Type, FunctionDeclaration } from "@google/genai";
 import { createClient } from '@supabase/supabase-js';
 import { AIAnalysisResult, HealthStatus, RecordType, SupabaseSettings, DogEvent, ChatMessage } from "../types";
@@ -28,10 +31,15 @@ INFORMACIÓN CLAVE A EXTRAER:
 REGLAS ESPECÍFICAS Y FORMATO DE TÍTULO:
 - **PARA EL TIPO 'Caca' (IMPORTANTE)**:
   - Evalúa visualmente o por descripción la calidad de las heces asignando una puntuación del 1 al 10 (siendo 10 lo más saludable/perfecto).
+  - Puntuación 1: Diarrea líquida grave.
+  - Puntuación 5: Blanda o algo suelta.
+  - Puntuación 10: Perfecta consistencia, forma y color.
+  - Asigna este valor al campo 'poopScore' (entero 1-10).
+  
   - Aplica esta lógica de etiquetas según tu puntuación:
-    - Puntuación 7, 8, 9, 10 -> "Buena"
-    - Puntuación 4, 5, 6 -> "Regular"
-    - Puntuación 1, 2, 3 -> "Mala"
+    - Puntuación 7-10 -> "Buena"
+    - Puntuación 4-6 -> "Regular"
+    - Puntuación 1-3 -> "Mala"
   - **EL TÍTULO DEBE EMPEZAR CON LA ETIQUETA**. Formato: "[Etiqueta] - [Resumen]".
   - Ejemplo: "Buena - Caca sólida y color normal", "Mala - Diarrea líquida".
 
@@ -169,7 +177,7 @@ export const analyzeInput = async (
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          title: { type: Type.STRING, description: "Título del evento (Ej: 'Buena - Caca normal')" },
+          title: { type: Type.STRING, description: "Título del evento" },
           recordType: {
             type: Type.STRING,
             enum: Object.values(RecordType),
@@ -185,6 +193,7 @@ export const analyzeInput = async (
           weight: { type: Type.NUMBER, description: "Peso en kg", nullable: true },
           date: { type: Type.STRING, description: "Fecha del evento YYYY-MM-DD", nullable: true },
           time: { type: Type.STRING, description: "Hora del evento HH:MM", nullable: true },
+          poopScore: { type: Type.INTEGER, description: "Puntuación de caca 1-10", nullable: true }
         },
         required: ["title", "recordType"]
       }
@@ -218,7 +227,7 @@ export const analyzeImage = async (
                 }
             },
             {
-                text: `Momento actual: ${now.toLocaleString('es-ES')}. Analiza visualmente esta imagen. Identifica qué es (Caca, Vómito, Comida, etc.). Si es CACA, califícala como Buena/Regular/Mala según su aspecto saludable y ponlo en el título.`
+                text: `Momento actual: ${now.toLocaleString('es-ES')}. Analiza visualmente esta imagen. Identifica qué es (Caca, Vómito, Comida, etc.). Si es CACA, califícala del 1 al 10 en 'poopScore'.`
             }
         ]
     };
@@ -243,6 +252,7 @@ export const analyzeImage = async (
             weight: { type: Type.NUMBER, description: "Peso en kg", nullable: true },
             date: { type: Type.STRING, description: "Fecha YYYY-MM-DD", nullable: true },
             time: { type: Type.STRING, description: "Hora HH:MM", nullable: true },
+            poopScore: { type: Type.INTEGER, description: "Puntuación 1-10", nullable: true }
           },
           required: ["title", "recordType"]
         }
@@ -299,6 +309,7 @@ export const analyzeAudio = async (
             weight: { type: Type.NUMBER, description: "Peso en kg", nullable: true },
             date: { type: Type.STRING, description: "Fecha YYYY-MM-DD", nullable: true },
             time: { type: Type.STRING, description: "Hora HH:MM", nullable: true },
+            poopScore: { type: Type.INTEGER, description: "Puntuación 1-10", nullable: true }
           },
           required: ["title", "recordType"]
         }
@@ -357,6 +368,7 @@ export const analyzeFile = async (
             weight: { type: Type.NUMBER, description: "Peso en kg si aparece en el documento", nullable: true },
             date: { type: Type.STRING, description: "Fecha del documento o evento YYYY-MM-DD", nullable: true },
             time: { type: Type.STRING, description: "Hora HH:MM", nullable: true },
+            poopScore: { type: Type.INTEGER, description: "Puntuación 1-10", nullable: true }
           },
           required: ["title", "recordType"]
         }
@@ -458,7 +470,8 @@ export const consultAssistant = async (
                 type: e.recordType,
                 title: e.title,
                 status: e.healthStatus,
-                desc: e.description
+                desc: e.description,
+                score: e.poopScore // Pass score to AI
             }));
 
             const functionResponseParts = [
@@ -490,4 +503,56 @@ export const consultAssistant = async (
         text: response.text || "No pude generar una respuesta.",
         events: foundEvents.length > 0 ? foundEvents : undefined
     };
+};
+
+// --- NEW: TASK DETECTION ---
+export const detectTaskFromNote = async (
+    message: string, 
+    mentionedUsers: {id: string, name: string}[],
+    settings: SupabaseSettings,
+    accessToken?: string
+): Promise<{ title: string, assignedToId: string } | null> => {
+    if (mentionedUsers.length === 0) return null;
+
+    const apiKey = await getGeminiApiKey(settings, accessToken);
+    const usersContext = mentionedUsers.map(u => `${u.name} (ID: ${u.id})`).join(", ");
+
+    const prompt = `
+    Analiza este mensaje del tablón de equipo: "${message}".
+    Usuarios mencionados: [${usersContext}].
+    
+    ¿El mensaje contiene claramente una tarea, orden, recordatorio o solicitud de acción para alguno de los usuarios mencionados?
+    
+    - Si SÍ: Devuelve un JSON con "title" (resumen corto de la acción, infinitivo) y "assignedToId" (el ID exacto del usuario).
+    - Si NO (es solo un comentario, aviso informativo, o pregunta general): Devuelve null.
+    
+    Ejemplos:
+    - "@Juan saca al perro" -> {"title": "Sacar al perro", "assignedToId": "..."}
+    - "@Maria ¿qué tal está?" -> null
+    - "Hola @Pedro" -> null
+    - "@Ana compra pienso por favor" -> {"title": "Comprar pienso", "assignedToId": "..."}
+    `;
+
+    const config = {
+        responseMimeType: "application/json",
+        responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+                title: { type: Type.STRING },
+                assignedToId: { type: Type.STRING },
+            },
+            nullable: true
+        }
+    };
+
+    try {
+        const response = await generateWithFallback(apiKey, { parts: [{ text: prompt }] }, config);
+        if (!response.text) return null;
+        const result = JSON.parse(response.text);
+        if (!result || !result.title || !result.assignedToId) return null;
+        return result;
+    } catch (e) {
+        console.error("Task detection failed", e);
+        return null;
+    }
 };

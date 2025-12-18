@@ -1,7 +1,8 @@
 
 import React, { useEffect, useState, useRef } from 'react';
-import { PetCollaborator, PetNote, SupabaseSettings } from '../types';
-import { createPetNote, deletePetNote, getCollaborators, getPetNotes, togglePinNote, updateLastSeenBoard } from '../services/supabaseService';
+import { PetCollaborator, PetNote, PetTask, SupabaseSettings } from '../types';
+import { createPetNote, deletePetNote, getCollaborators, getPetNotes, togglePinNote, updateLastSeenBoard, getPetTasks, createPetTask, toggleTaskCompletion } from '../services/supabaseService';
+import { detectTaskFromNote } from '../services/geminiService';
 import { createClient } from '@supabase/supabase-js';
 import { Icons } from '../constants';
 
@@ -12,246 +13,250 @@ interface BoardViewProps {
     accessToken?: string;
 }
 
+type Tab = 'notes' | 'tasks';
+
 const BoardView: React.FC<BoardViewProps> = ({ settings, petId, currentUserId, accessToken }) => {
+    const [activeTab, setActiveTab] = useState<Tab>('notes');
+    const [loading, setLoading] = useState(true);
+    
+    // NOTES STATE
     const [notes, setNotes] = useState<PetNote[]>([]);
     const [inputText, setInputText] = useState('');
     const [isSending, setIsSending] = useState(false);
-    const [loading, setLoading] = useState(true);
-    
-    // Mention Logic
     const [members, setMembers] = useState<PetCollaborator[]>([]);
     const [mentionQuery, setMentionQuery] = useState<string | null>(null);
-    const [selectedMentions, setSelectedMentions] = useState<string[]>([]); // Array of User IDs to send
-
-    // Delete UI State
+    const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
     const [deletingNoteId, setDeletingNoteId] = useState<string | null>(null);
-    const [isDeleting, setIsDeleting] = useState(false);
+    
+    // TASKS STATE
+    const [tasks, setTasks] = useState<PetTask[]>([]);
 
     const listRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
 
-    // --- 1. Initial Load (Notes & Members) ---
+    // --- 1. Initial Load ---
     useEffect(() => {
         const initData = async () => {
             setLoading(true);
-            const [notesData, membersData] = await Promise.all([
+            const [notesData, tasksData, membersData] = await Promise.all([
                 getPetNotes(settings, petId, accessToken),
+                getPetTasks(settings, petId, accessToken),
                 getCollaborators(settings, petId, accessToken)
             ]);
             setNotes(notesData);
+            setTasks(tasksData);
             setMembers(membersData);
             setLoading(false);
-            
-            // Update "Seen" status
             updateLastSeenBoard(settings, petId, currentUserId, accessToken);
         };
         initData();
     }, [petId]);
 
-    // --- 2. Setup Realtime Subscription ---
+    // --- 2. Realtime ---
     useEffect(() => {
         if (!settings.supabaseUrl || !settings.supabaseKey) return;
-
-        const client = createClient(settings.supabaseUrl, settings.supabaseKey, {
-            global: { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined }
-        });
-
-        const channel = client
-            .channel(`notes_${petId}`)
+        const client = createClient(settings.supabaseUrl, settings.supabaseKey, { global: { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined } });
+        
+        const channel = client.channel(`board_${petId}`)
             .on('postgres_changes', { event: '*', schema: 'public', table: 'pet_notes', filter: `pet_id=eq.${petId}` }, async () => {
-                const data = await getPetNotes(settings, petId, accessToken);
-                setNotes(data);
+                setNotes(await getPetNotes(settings, petId, accessToken));
+            })
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'pet_tasks', filter: `pet_id=eq.${petId}` }, async () => {
+                setTasks(await getPetTasks(settings, petId, accessToken));
             })
             .subscribe();
 
         return () => { client.removeChannel(channel); };
-    }, [petId, settings, accessToken]);
+    }, [petId]);
 
-    // --- Mention Detection ---
+    // --- NOTES LOGIC ---
     const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
         const text = e.target.value;
         setInputText(text);
-
-        // Simple detection: check if last word starts with @
         const match = text.match(/@(\w*)$/);
-        if (match) {
-            setMentionQuery(match[1].toLowerCase());
-        } else {
-            setMentionQuery(null);
-        }
+        setMentionQuery(match ? match[1].toLowerCase() : null);
     };
 
     const addMention = (user: PetCollaborator) => {
         if (!mentionQuery && mentionQuery !== '') return;
-        
         const name = user.profiles?.full_name || user.profiles?.email.split('@')[0] || 'Usuario';
         const newText = inputText.replace(/@(\w*)$/, `@${name} `);
-        
         setInputText(newText);
         setSelectedMentions(prev => [...prev, user.user_id]);
         setMentionQuery(null);
-        
         if (inputRef.current) inputRef.current.focus();
     };
 
     const handleSend = async () => {
-        const textToSend = inputText.trim();
-        if (!textToSend) return;
-        
-        // Filter mentions: ensure the ID is still relevant (the name is still in text)
-        // This is a basic check. Ideally we track offsets, but for now just checking if we collected the ID is enough.
-        // We send all collected IDs.
-        
+        const text = inputText.trim();
+        if (!text) return;
         setIsSending(true);
         try {
-            const newNote = await createPetNote(settings, petId, currentUserId, textToSend, selectedMentions, accessToken);
-            
+            // 1. Create Note
+            const newNote = await createPetNote(settings, petId, currentUserId, text, selectedMentions, accessToken);
             if (newNote) {
                 setNotes(prev => [newNote, ...prev]);
                 setInputText('');
+                
+                // 2. INTELLIGENT TASK DETECTION (Background)
+                if (selectedMentions.length > 0) {
+                    const mentionedUsersData = members
+                        .filter(m => selectedMentions.includes(m.user_id))
+                        .map(m => ({ id: m.user_id, name: m.profiles?.full_name || m.profiles?.email || 'User' }));
+                    
+                    detectTaskFromNote(text, mentionedUsersData, settings, accessToken).then(async (taskData) => {
+                        if (taskData) {
+                            console.log("Task detected!", taskData);
+                            const newTask = await createPetTask(settings, petId, taskData.title, taskData.assignedToId, currentUserId, accessToken);
+                            if (newTask) {
+                                setTasks(prev => [newTask, ...prev]);
+                                // Optional: Show toast "Task created"
+                            }
+                        }
+                    });
+                }
                 setSelectedMentions([]);
                 if (listRef.current) listRef.current.scrollTop = 0;
             }
-        } catch (error) {
-            console.error("Error sending note", error);
+        } catch (error: any) {
+            alert(error.message);
         } finally {
             setIsSending(false);
         }
     };
 
-    // ... (Pin/Delete handlers same as before)
     const handlePin = async (note: PetNote) => {
         const original = [...notes];
         setNotes(prev => prev.map(n => n.id === note.id ? { ...n, is_pinned: !n.is_pinned } : n));
-        try { await togglePinNote(settings, note.id, note.is_pinned, accessToken); } 
-        catch (e: any) { alert(e.message); setNotes(original); }
+        try { await togglePinNote(settings, note.id, note.is_pinned, accessToken); } catch (e) { setNotes(original); }
     };
 
     const executeDelete = async (noteId: string) => {
-        setDeletingNoteId(null); setIsDeleting(true);
+        setDeletingNoteId(null);
         const prev = [...notes];
         setNotes(prev => prev.filter(n => n.id !== noteId));
-        try { await deletePetNote(settings, noteId, accessToken); }
-        catch (e: any) { console.error(e); setNotes(prev); alert(`Error: ${e.message}`); }
-        finally { setIsDeleting(false); }
+        try { await deletePetNote(settings, noteId, accessToken); } 
+        catch (e: any) { setNotes(prev); alert(e.message); }
     };
 
-    const formatDate = (iso: string) => {
-        return new Date(iso).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    // --- TASKS LOGIC ---
+    const handleToggleTask = async (task: PetTask) => {
+        const original = [...tasks];
+        setTasks(prev => prev.map(t => t.id === task.id ? { ...t, is_completed: !t.is_completed } : t));
+        try { await toggleTaskCompletion(settings, task.id, task.is_completed, accessToken); } catch (e) { setTasks(original); }
     };
 
-    const sortedNotes = [...notes].sort((a, b) => {
-        if (a.is_pinned && !b.is_pinned) return -1;
-        if (!a.is_pinned && b.is_pinned) return 1;
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-    });
-
-    const filteredMembers = mentionQuery !== null 
-        ? members.filter(m => {
-            const name = m.profiles?.full_name || m.profiles?.email || '';
-            return name.toLowerCase().includes(mentionQuery);
-        }) 
-        : [];
+    const sortedNotes = [...notes].sort((a, b) => (a.is_pinned === b.is_pinned) ? new Date(b.created_at).getTime() - new Date(a.created_at).getTime() : a.is_pinned ? -1 : 1);
+    const filteredMembers = mentionQuery !== null ? members.filter(m => (m.profiles?.full_name || m.profiles?.email || '').toLowerCase().includes(mentionQuery)) : [];
 
     return (
         <div className="flex flex-col h-full bg-slate-50 relative">
-            <header className="bg-white px-6 py-4 border-b border-slate-100 sticky top-0 z-10 flex items-center gap-2">
-                <Icons.Board className="w-5 h-5 text-slate-500" />
-                <h2 className="font-bold text-slate-800">Tablón de Notas</h2>
+            {/* Header with Tabs */}
+            <header className="bg-white border-b border-slate-100 sticky top-0 z-10">
+                <div className="px-6 py-4 flex items-center gap-2">
+                    <Icons.Board className="w-5 h-5 text-slate-500" />
+                    <h2 className="font-bold text-slate-800">Tablón de Equipo</h2>
+                </div>
+                <div className="flex px-2">
+                    <button 
+                        onClick={() => setActiveTab('notes')} 
+                        className={`flex-1 py-2 text-sm font-bold border-b-2 transition-colors ${activeTab === 'notes' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-400'}`}
+                    >
+                        Notas ({notes.length})
+                    </button>
+                    <button 
+                        onClick={() => setActiveTab('tasks')} 
+                        className={`flex-1 py-2 text-sm font-bold border-b-2 transition-colors ${activeTab === 'tasks' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-400'}`}
+                    >
+                        Tareas ({tasks.filter(t => !t.is_completed).length})
+                    </button>
+                </div>
             </header>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4" ref={listRef}>
                 {loading && <p className="text-center text-slate-400 text-sm mt-10">Cargando...</p>}
-                {!loading && sortedNotes.length === 0 && (
-                    <div className="text-center mt-20 opacity-50">
-                        <p className="text-slate-500 text-sm">No hay notas.</p>
+                
+                {/* NOTES VIEW */}
+                {activeTab === 'notes' && (
+                    <>
+                        {sortedNotes.map(note => (
+                            <div key={note.id} className={`p-4 rounded-2xl shadow-sm border relative ${note.is_pinned ? 'bg-yellow-50 border-yellow-200' : 'bg-white border-slate-100'}`}>
+                                {note.is_pinned && <div className="absolute -top-2 -right-2 bg-yellow-400 text-yellow-900 rounded-full p-1 z-10"><Icons.Pin className="w-3 h-3"/></div>}
+                                <div className="flex justify-between mb-2">
+                                    <div className="flex items-center gap-2">
+                                        <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white bg-blue-500`}>
+                                            {(note.profiles?.full_name || '?').charAt(0)}
+                                        </div>
+                                        <span className="text-xs font-bold text-slate-700">{note.profiles?.full_name}</span>
+                                    </div>
+                                    <span className="text-[10px] text-slate-400">{new Date(note.created_at).toLocaleDateString()}</span>
+                                </div>
+                                <p className="text-sm text-slate-800 whitespace-pre-wrap">
+                                    {note.content.split(/(@\w+)/g).map((part, i) => part.startsWith('@') ? <span key={i} className="text-blue-600 font-bold">{part}</span> : part)}
+                                </p>
+                                <div className="absolute bottom-2 right-2 flex gap-1">
+                                    {deletingNoteId === note.id ? (
+                                        <div className="flex gap-2 bg-white shadow p-1 rounded"><button onClick={()=>setDeletingNoteId(null)} className="text-xs bg-slate-100 px-2 rounded">No</button><button onClick={()=>executeDelete(note.id)} className="text-xs bg-red-500 text-white px-2 rounded">Sí</button></div>
+                                    ) : (
+                                        <>
+                                            <button onClick={() => handlePin(note)} className="p-1 hover:bg-slate-100 rounded text-slate-300"><Icons.Pin className="w-3.5 h-3.5"/></button>
+                                            {note.user_id === currentUserId && <button onClick={() => setDeletingNoteId(note.id)} className="p-1 hover:bg-slate-100 rounded text-slate-300 hover:text-red-400"><Icons.Trash className="w-3.5 h-3.5"/></button>}
+                                        </>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </>
+                )}
+
+                {/* TASKS VIEW */}
+                {activeTab === 'tasks' && (
+                    <div className="space-y-2">
+                        {tasks.length === 0 && <p className="text-center text-slate-400 text-sm mt-10">No hay tareas pendientes. ¡Buen trabajo!</p>}
+                        {tasks.map(task => (
+                            <div key={task.id} className={`p-3 rounded-xl border flex items-center gap-3 ${task.is_completed ? 'bg-slate-50 border-slate-100 opacity-60' : 'bg-white border-slate-200 shadow-sm'}`}>
+                                <button 
+                                    onClick={() => handleToggleTask(task)}
+                                    className={`w-6 h-6 rounded border flex items-center justify-center transition-colors ${task.is_completed ? 'bg-green-500 border-green-500 text-white' : 'border-slate-300 bg-white'}`}
+                                >
+                                    {task.is_completed && <Icons.Check className="w-4 h-4" />}
+                                </button>
+                                <div className="flex-1">
+                                    <p className={`text-sm font-medium ${task.is_completed ? 'line-through text-slate-400' : 'text-slate-800'}`}>{task.title}</p>
+                                    <div className="flex justify-between mt-1">
+                                        <span className="text-[10px] text-slate-400">Asignado a: <span className="font-bold text-blue-500">{task.assignee?.full_name || 'Cualquiera'}</span></span>
+                                        <span className="text-[10px] text-slate-300">Por: {task.creator?.full_name}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
                     </div>
                 )}
-                
-                {sortedNotes.map(note => {
-                    const isMe = note.user_id === currentUserId;
-                    const isMentioned = note.mentions?.includes(currentUserId);
-                    const isConfirming = deletingNoteId === note.id;
+            </div>
 
-                    return (
-                        <div key={note.id} className={`p-4 rounded-2xl shadow-sm border relative transition-all ${
-                            note.is_pinned ? 'bg-yellow-50 border-yellow-200' : 
-                            isMentioned ? 'bg-blue-50 border-blue-200 ring-1 ring-blue-300' : 
-                            'bg-white border-slate-100'
-                        }`}>
-                            {note.is_pinned && <div className="absolute -top-2 -right-2 bg-yellow-400 text-yellow-900 rounded-full p-1 z-10"><Icons.Pin className="w-3 h-3"/></div>}
-                            
-                            <div className="flex justify-between mb-2">
-                                <div className="flex items-center gap-2">
-                                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white ${isMe ? 'bg-blue-500' : 'bg-slate-400'}`}>
-                                        {(note.profiles?.full_name || note.profiles?.email || '?').charAt(0).toUpperCase()}
-                                    </div>
-                                    <span className="text-xs font-bold text-slate-700">{note.profiles?.full_name || 'Usuario'}</span>
-                                </div>
-                                <span className="text-[10px] text-slate-400">{formatDate(note.created_at)}</span>
-                            </div>
-                            
-                            <p className="text-sm text-slate-800 whitespace-pre-wrap">
-                                {note.content.split(/(@\w+)/g).map((part, i) => 
-                                    part.startsWith('@') ? <span key={i} className="text-blue-600 font-bold">{part}</span> : part
-                                )}
-                            </p>
-
-                            <div className="absolute bottom-2 right-2 flex gap-1">
-                                {isConfirming ? (
-                                    <div className="flex items-center gap-2 bg-white shadow p-1 rounded border z-20">
-                                        <button onClick={() => setDeletingNoteId(null)} className="text-xs px-2 py-1 bg-slate-100 rounded">Cancelar</button>
-                                        <button onClick={() => executeDelete(note.id)} className="text-xs px-2 py-1 bg-red-500 text-white rounded">Borrar</button>
-                                    </div>
-                                ) : (
-                                    <>
-                                        <button onClick={() => handlePin(note)} className={`p-1 hover:bg-slate-100 rounded ${note.is_pinned ? 'text-yellow-500' : 'text-slate-300'}`}><Icons.Pin className="w-3.5 h-3.5"/></button>
-                                        {isMe && <button onClick={() => setDeletingNoteId(note.id)} className="p-1 hover:bg-slate-100 rounded text-slate-300 hover:text-red-400"><Icons.Trash className="w-3.5 h-3.5"/></button>}
-                                    </>
-                                )}
-                            </div>
+            {/* INPUT AREA (Only visible on Notes tab) */}
+            {activeTab === 'notes' && (
+                <>
+                    {mentionQuery !== null && filteredMembers.length > 0 && (
+                        <div className="absolute bottom-24 left-4 bg-white border border-slate-200 shadow-xl rounded-xl p-2 w-64 z-50">
+                            {filteredMembers.map(m => (
+                                <button key={m.user_id} onClick={() => addMention(m)} className="w-full text-left p-2 hover:bg-blue-50 rounded-lg flex items-center gap-2">
+                                    <div className="w-5 h-5 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs font-bold">{(m.profiles?.full_name || '?').charAt(0)}</div>
+                                    <span className="text-sm text-slate-700">{m.profiles?.full_name || m.profiles?.email}</span>
+                                </button>
+                            ))}
                         </div>
-                    );
-                })}
-            </div>
-
-            {/* Mention Popup */}
-            {mentionQuery !== null && filteredMembers.length > 0 && (
-                <div className="absolute bottom-24 left-4 bg-white border border-slate-200 shadow-xl rounded-xl p-2 w-64 z-50">
-                    <p className="text-[10px] font-bold text-slate-400 px-2 mb-1">MENCIONAR A:</p>
-                    {filteredMembers.map(m => (
-                        <button 
-                            key={m.user_id} 
-                            onClick={() => addMention(m)}
-                            className="w-full text-left p-2 hover:bg-blue-50 rounded-lg flex items-center gap-2"
-                        >
-                            <div className="w-5 h-5 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs font-bold">
-                                {(m.profiles?.full_name || m.profiles?.email).charAt(0).toUpperCase()}
-                            </div>
-                            <span className="text-sm text-slate-700">{m.profiles?.full_name || m.profiles?.email}</span>
-                        </button>
-                    ))}
-                </div>
+                    )}
+                    <div className="p-3 bg-white border-t border-slate-100 pb-24">
+                        <div className="flex items-end gap-2">
+                            <textarea ref={inputRef} value={inputText} onChange={handleInputChange} placeholder="Escribe una nota... @nombre para asignar tarea" className="flex-1 p-3 bg-slate-50 rounded-xl text-sm outline-none resize-none h-12 focus:h-24 transition-all border border-slate-200"/>
+                            <button onClick={handleSend} disabled={!inputText.trim() || isSending} className="h-12 w-12 bg-blue-600 text-white rounded-xl flex items-center justify-center shadow active:scale-95 disabled:opacity-50">
+                                {isSending ? <div className="w-4 h-4 border-2 border-t-transparent border-white rounded-full animate-spin"/> : <Icons.Send className="w-5 h-5"/>}
+                            </button>
+                        </div>
+                    </div>
+                </>
             )}
-
-            <div className="p-3 bg-white border-t border-slate-100 pb-24">
-                <div className="flex items-end gap-2">
-                    <textarea
-                        ref={inputRef}
-                        value={inputText}
-                        onChange={handleInputChange}
-                        placeholder="Escribe una nota... usa @ para mencionar"
-                        className="flex-1 p-3 bg-slate-50 rounded-xl text-sm outline-none resize-none h-12 focus:h-24 transition-all border border-slate-200"
-                    />
-                    <button 
-                        onClick={handleSend}
-                        disabled={!inputText.trim() || isSending}
-                        className="h-12 w-12 bg-blue-600 text-white rounded-xl flex items-center justify-center shadow active:scale-95 disabled:opacity-50"
-                    >
-                        {isSending ? <div className="w-4 h-4 border-2 border-t-transparent border-white rounded-full animate-spin"/> : <Icons.Send className="w-5 h-5"/>}
-                    </button>
-                </div>
-            </div>
         </div>
     );
 };

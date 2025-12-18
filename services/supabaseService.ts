@@ -1,17 +1,26 @@
 
+
+
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { DogEvent, SupabaseSettings, ConnectionResult, EventSearchParams, RecordType, Pet, PetCollaborator, CollaboratorPermissions, PetNote } from '../types';
+import { DogEvent, SupabaseSettings, ConnectionResult, EventSearchParams, RecordType, Pet, PetCollaborator, CollaboratorPermissions, PetNote, PetTask } from '../types';
 
 // Helper to create a fresh client every time. 
 // If accessToken is provided, we inject it into the global headers to ensure RLS works for Storage/DB.
 const createFreshClient = (settings: SupabaseSettings, accessToken?: string): SupabaseClient | null => {
   let cleanUrl = settings.supabaseUrl.trim();
+  // Remove quotes
+  cleanUrl = cleanUrl.replace(/^["']|["']$/g, '');
+
   if (!cleanUrl.startsWith('http')) {
     cleanUrl = `https://${cleanUrl}`;
   }
   cleanUrl = cleanUrl.replace(/\/$/, "");
 
-  if (cleanUrl && settings.supabaseKey) {
+  let cleanKey = settings.supabaseKey.trim();
+  // Remove quotes
+  cleanKey = cleanKey.replace(/^["']|["']$/g, '');
+
+  if (cleanUrl && cleanKey) {
     try {
         const options: any = {
           auth: {
@@ -30,7 +39,7 @@ const createFreshClient = (settings: SupabaseSettings, accessToken?: string): Su
             };
         }
 
-        return createClient(cleanUrl, settings.supabaseKey, options);
+        return createClient(cleanUrl, cleanKey, options);
     } catch (e) {
         console.error("Client creation failed:", e);
         return null;
@@ -174,15 +183,55 @@ export const inviteCollaborator = async (
     if (!client) return { success: false, error: "Client error" };
 
     try {
-        console.log("Inviting email (via lookup_user_by_email):", email);
+        console.log("Inviting email:", email);
         
-        // USA NUEVA FUNCIÓN 'lookup_user_by_email' con parámetro 'email_input'
-        // Esto evita conflictos de caché con las funciones anteriores.
-        const { data: userId, error: rpcError } = await client.rpc('lookup_user_by_email', { email_input: email });
-        
-        if (rpcError) {
-            console.error("RPC Error:", rpcError);
-            return { success: false, error: `Error buscando usuario: ${rpcError.message}` };
+        let userId: string | null = null;
+        let lastError: any = null;
+
+        // Try multiple function signatures/names to be robust against different schema versions or hints
+        const attempts = [
+            { name: 'lookup_user_by_email', args: { email_input: email } }, // Standard V9+
+            { name: 'lookup_user_by_email', args: { email: email } },       // Legacy V8
+            { name: 'find_user_by_email', args: { user_email: email } },    // Hint from error logs
+            { name: 'find_user_by_email', args: { email: email } }          // Alternative hint
+        ];
+
+        for (const attempt of attempts) {
+            const { data, error } = await client.rpc(attempt.name, attempt.args);
+            if (!error) {
+                userId = data;
+                lastError = null;
+                break;
+            }
+            lastError = error;
+            // Only log warning if it's not the last attempt
+            if (attempt !== attempts[attempts.length - 1]) {
+                // console.warn(`RPC ${attempt.name} failed, trying next...`);
+            }
+        }
+
+        if (lastError) {
+            console.error("All RPC attempts failed. Last Error:", JSON.stringify(lastError));
+            
+            const isMissing = 
+                lastError.code === '42883' || 
+                lastError.code === 'PGRST202' || 
+                (lastError.message && (
+                    lastError.message.includes('does not exist') || 
+                    lastError.message.includes('Could not find')
+                ));
+
+            if (isMissing) {
+                return { 
+                    success: false, 
+                    error: "No se encontró la función 'lookup_user_by_email' ni 'find_user_by_email' en la base de datos. Por favor, ejecuta el script SQL de migración en Supabase." 
+                };
+            }
+
+            return { 
+                success: false, 
+                error: `Error buscando usuario: ${lastError.message || JSON.stringify(lastError)}` 
+            };
         }
         
         if (!userId) return { success: false, error: "Usuario no encontrado. Pídele que se registre en la App primero." };
@@ -210,7 +259,7 @@ export const inviteCollaborator = async (
         return { success: true };
 
     } catch (e: any) {
-        return { success: false, error: e.message };
+        return { success: false, error: e.message || JSON.stringify(e) };
     }
 };
 
@@ -322,8 +371,12 @@ export const createPetNote = async (
         .single();
 
     if (error) {
-        console.error("Error creating note:", error);
-        // Throw error to allow UI to catch it and display the message
+        if (error.message?.includes('mentions') || error.code === 'PGRST204' || error.code === '42703') {
+            const fallbackPayload = { pet_id: petId, user_id: userId, content: content };
+            const { data: dataFallback, error: errorFallback } = await client.from('pet_notes').insert(fallbackPayload).select(`*, profiles(full_name, email)`).single();
+            if (errorFallback) throw new Error(errorFallback.message);
+            return dataFallback as unknown as PetNote;
+        }
         throw new Error(error.message || JSON.stringify(error));
     }
     return data as unknown as PetNote;
@@ -402,6 +455,77 @@ export const checkUnreadMessages = async (settings: SupabaseSettings, petId: str
     return !!data;
 };
 
+// --- NEW: TASK CRUD ---
+
+export const getPetTasks = async (settings: SupabaseSettings, petId: string, accessToken?: string): Promise<PetTask[]> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return [];
+    
+    const { data, error } = await client
+        .from('pet_tasks')
+        .select(`*, assignee:assigned_to(full_name, email), creator:created_by(full_name)`)
+        .eq('pet_id', petId)
+        .order('is_completed', { ascending: true })
+        .order('created_at', { ascending: false });
+
+    if (error) {
+        console.error("Error getting tasks", error);
+        return [];
+    }
+    return data as any;
+};
+
+export const createPetTask = async (
+    settings: SupabaseSettings, 
+    petId: string, 
+    title: string, 
+    assignedTo: string | null, 
+    createdBy: string, 
+    accessToken?: string
+): Promise<PetTask | null> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return null;
+
+    const { data, error } = await client
+        .from('pet_tasks')
+        .insert({
+            pet_id: petId,
+            title: title,
+            assigned_to: assignedTo,
+            created_by: createdBy
+        })
+        .select(`*, assignee:assigned_to(full_name, email), creator:created_by(full_name)`)
+        .single();
+
+    if (error) {
+        console.error("Error creating task", error);
+        return null;
+    }
+    return data as any;
+};
+
+export const toggleTaskCompletion = async (
+    settings: SupabaseSettings, 
+    taskId: string, 
+    isCompleted: boolean, 
+    accessToken?: string
+): Promise<boolean> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return false;
+
+    const updatePayload = {
+        is_completed: !isCompleted,
+        completed_at: !isCompleted ? new Date().toISOString() : null
+    };
+
+    const { error } = await client
+        .from('pet_tasks')
+        .update(updatePayload)
+        .eq('id', taskId);
+
+    if (error) throw new Error(error.message);
+    return true;
+};
 
 // --- CRUD EVENTS ---
 
@@ -450,7 +574,7 @@ export const saveEventToSupabase = async (event: DogEvent, settings: SupabaseSet
         let cleanTime = event.time;
         if (cleanTime.length === 5) cleanTime += ":00";
 
-        const payload = {
+        const payload: any = {
             id: event.id, 
             title: event.title,
             record_type: event.recordType,
@@ -461,7 +585,8 @@ export const saveEventToSupabase = async (event: DogEvent, settings: SupabaseSet
             description: event.description,
             photo_url: publicPhotoUrl || event.photoUrl,
             pet_id: event.petId,
-            user_id: event.userId
+            user_id: event.userId,
+            poop_score: event.poopScore !== undefined ? event.poopScore : null // NEW FIELD
         };
 
         const { data, error: insertError } = await client
@@ -579,6 +704,36 @@ export const searchEvents = async (params: EventSearchParams, settings: Supabase
         photoUrl: row.photo_url,
         petId: row.pet_id,
         userId: row.user_id,
+        poopScore: row.poop_score, // MAP FIELD
         synced: true
+    }));
+};
+
+// --- NEW LIGHTWEIGHT FETCH FOR WEIGHT CHARTS ---
+export const getWeightHistory = async (settings: SupabaseSettings, petId: string, months: number = 6, accessToken?: string): Promise<{ date: string, weight: number }[]> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return [];
+
+    // Calculate start date
+    const d = new Date();
+    d.setMonth(d.getMonth() - months);
+    const startDate = d.toISOString().split('T')[0];
+
+    const { data, error } = await client
+        .from('events')
+        .select('date, weight')
+        .eq('pet_id', petId)
+        .not('weight', 'is', null) // Only rows with weight
+        .gte('date', startDate)
+        .order('date', { ascending: true }); // Important for charts
+
+    if (error) {
+        console.error("Error fetching weight history:", error);
+        return [];
+    }
+
+    return (data || []).map((row: any) => ({
+        date: row.date,
+        weight: Number(row.weight)
     }));
 };

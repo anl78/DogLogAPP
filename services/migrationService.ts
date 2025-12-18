@@ -1,6 +1,38 @@
+
 import { DogEvent, SupabaseSettings, RecordType, HealthStatus } from '../types';
 import { saveEventToSupabase } from './supabaseService';
 import { createClient } from '@supabase/supabase-js';
+import { GoogleGenAI, Type } from "@google/genai";
+
+// Need to duplicate this to avoid circular dependencies if getApiKey is in geminiService which imports supabaseService
+// Best practice: Extract this helper to a 'config.ts' or 'authService.ts', but for now duplicating logic.
+async function getGeminiApiKeyInternal(settings: SupabaseSettings, accessToken?: string): Promise<string> {
+    // 1. Try Production Env Var (Vercel)
+    try {
+        // @ts-ignore
+        const envKey = import.meta.env.VITE_GEMINI_API_KEY;
+        if (envKey && envKey.length > 10) return envKey;
+    } catch (e) {
+        // Ignore error if env not available
+    }
+
+    // 2. Fallback: Fetch from Supabase DB (Development / Local)
+    const client = createClient(settings.supabaseUrl, settings.supabaseKey, {
+        global: { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined }
+    });
+
+    const { data } = await client
+        .from('app_secrets')
+        .select('value')
+        .eq('key_name', 'GEMINI_API_KEY')
+        .single();
+
+    if (!data?.value) {
+        throw new Error("Missing Gemini Key");
+    }
+    return data.value;
+}
+
 
 // Proxy strategy same as notionService
 const PROXIES = [
@@ -71,16 +103,60 @@ async function urlToBase64(url: string): Promise<string> {
     }
 }
 
+// Helper to compress Blob
+const compressBlob = (blob: Blob): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(blob);
+        reader.onload = (event) => {
+            const img = new Image();
+            img.src = event.target?.result as string;
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const MAX_WIDTH = 800;
+                const scaleSize = MAX_WIDTH / img.width;
+                const finalWidth = scaleSize < 1 ? MAX_WIDTH : img.width;
+                const finalHeight = scaleSize < 1 ? img.height * scaleSize : img.height;
+
+                canvas.width = finalWidth;
+                canvas.height = finalHeight;
+
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    resolve(blob);
+                    return;
+                }
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                
+                canvas.toBlob((newBlob) => {
+                    if (newBlob) resolve(newBlob);
+                    else resolve(blob);
+                }, 'image/jpeg', 0.7); // 70% Quality
+            };
+            img.onerror = (err) => reject(err);
+        };
+        reader.onerror = (err) => reject(err);
+    });
+};
+
 // --- NEW MASS DELETE FUNCTION ---
 export const deleteMigratedEvents = async (
     supabaseSettings: SupabaseSettings,
     filters: { startDate?: string, endDate?: string },
-    onLog: (msg: string) => void
+    onLog: (msg: string) => void,
+    accessToken?: string
 ): Promise<void> => {
     const log = (msg: string) => onLog(`[${new Date().toLocaleTimeString()}] ${msg}`);
     
-    // Create direct client
-    const client = createClient(supabaseSettings.supabaseUrl, supabaseSettings.supabaseKey);
+    // Create authenticated client
+    const client = createClient(supabaseSettings.supabaseUrl, supabaseSettings.supabaseKey, {
+        auth: {
+            persistSession: false,
+            autoRefreshToken: false,
+            detectSessionInUrl: false
+        },
+        global: { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined }
+    });
 
     log("🔍 Buscando eventos para borrar...");
 
@@ -140,10 +216,19 @@ export const assignOrphanEvents = async (
     settings: SupabaseSettings,
     targetUserId: string,
     targetPetId: string,
-    onLog: (msg: string) => void
+    onLog: (msg: string) => void,
+    accessToken?: string
 ): Promise<void> => {
     const log = (msg: string) => onLog(`[${new Date().toLocaleTimeString()}] ${msg}`);
-    const client = createClient(settings.supabaseUrl, settings.supabaseKey);
+    // Create authenticated client
+    const client = createClient(settings.supabaseUrl, settings.supabaseKey, {
+        auth: {
+            persistSession: false,
+            autoRefreshToken: false,
+            detectSessionInUrl: false
+        },
+        global: { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined }
+    });
 
     log(`🔍 Buscando eventos huérfanos (sin usuario o mascota)...`);
 
@@ -178,6 +263,309 @@ export const assignOrphanEvents = async (
     log(`🎉 ¡Éxito! Se han rescatado y asignado ${orphans.length} eventos.`);
 };
 
+// --- OPTIMIZATION FUNCTION (COMPRESS EXISTING) ---
+export const optimizeExistingPhotos = async (
+    settings: SupabaseSettings,
+    onProgress: (current: number, total: number, msg: string) => void,
+    onLog: (msg: string) => void,
+    accessToken?: string
+): Promise<void> => {
+    const log = (msg: string) => onLog(`[${new Date().toLocaleTimeString()}] ${msg}`);
+    
+    // Authenticate Client to pass RLS (Use explicit config to avoid local storage conflicts)
+    const client = createClient(settings.supabaseUrl, settings.supabaseKey, {
+        auth: {
+            persistSession: false,
+            autoRefreshToken: false,
+            detectSessionInUrl: false
+        },
+        global: {
+            headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined
+        }
+    });
+
+    log("🔍 Buscando eventos con fotos...");
+    
+    const { data: events, error } = await client
+        .from('events')
+        .select('id, title, photo_url')
+        .not('photo_url', 'is', null);
+
+    if (error) throw new Error(error.message);
+    
+    if (!events || events.length === 0) {
+        log("✅ No hay fotos para optimizar.");
+        return;
+    }
+
+    const total = events.length;
+    log(`📸 Encontradas ${total} fotos. Iniciando análisis...`);
+    
+    let compressedCount = 0;
+    let skippedCount = 0;
+    let errorCount = 0;
+
+    for (let i = 0; i < total; i++) {
+        const ev = events[i];
+        const url = ev.photo_url!;
+        
+        onProgress(i + 1, total, `Procesando: ${ev.title}`);
+
+        try {
+            // 1. Download
+            const response = await fetch(url);
+            if (!response.ok) {
+                log(`⚠️ Error descargando foto de: ${ev.title} (Status ${response.status})`);
+                errorCount++;
+                continue;
+            }
+            const blob = await response.blob();
+            const sizeKB = blob.size / 1024;
+
+            // 2. Check Size (Skip if < 150KB)
+            if (sizeKB < 150) {
+                // log(`⏩ ${ev.title}: Pequeña (${Math.round(sizeKB)}KB). Saltando.`);
+                skippedCount++;
+                continue;
+            }
+
+            // 3. Compress
+            log(`📉 Comprimiendo ${ev.title} (${Math.round(sizeKB)}KB)...`);
+            const compressedBlob = await compressBlob(blob);
+            const newSizeKB = compressedBlob.size / 1024;
+
+            // 4. Upload (Overwrite)
+            // Extract filename from URL
+            // URL format: .../storage/v1/object/public/dog_photos/uuid/filename.jpg
+            const urlObj = new URL(url);
+            const pathParts = urlObj.pathname.split('/dog_photos/'); // Split by bucket name
+            if (pathParts.length < 2) {
+                log(`⚠️ No pude extraer ruta de: ${url}`);
+                errorCount++;
+                continue;
+            }
+            const storagePath = decodeURIComponent(pathParts[1]); // e.g. "pet_id/timestamp.jpg"
+
+            // Attempt 1: Standard Upsert
+            const { error: uploadError } = await client.storage
+                .from('dog_photos')
+                .upload(storagePath, compressedBlob, {
+                    contentType: 'image/jpeg',
+                    upsert: true 
+                });
+
+            if (uploadError) {
+                // Handle RLS Violation: Policy might allow Insert/Delete but not Update.
+                // Fallback: Delete original -> Upload new
+                const isRlsError = (uploadError as any).code === '42501' || uploadError.message.includes('row-level security');
+                
+                if (isRlsError) {
+                    log(`⚠️ Upsert bloqueado por RLS. Intentando reemplazo (Borrar -> Subir)...`);
+                    
+                    const { error: removeError } = await client.storage.from('dog_photos').remove([storagePath]);
+                    if (removeError) {
+                        log(`❌ Falló borrado previo: ${removeError.message}`);
+                        errorCount++;
+                        continue;
+                    }
+
+                    const { error: retryError } = await client.storage
+                        .from('dog_photos')
+                        .upload(storagePath, compressedBlob, {
+                            contentType: 'image/jpeg',
+                            upsert: false // Now it's a fresh insert
+                        });
+
+                    if (retryError) {
+                        log(`❌ Falló la re-subida: ${retryError.message}`);
+                        errorCount++;
+                        continue;
+                    } else {
+                        const saving = Math.round(((sizeKB - newSizeKB) / sizeKB) * 100);
+                        log(`✅ Optimizado (vía Reemplazo): ${Math.round(newSizeKB)}KB (Ahorro: ${saving}%)`);
+                        compressedCount++;
+                    }
+                } else {
+                    log(`❌ Error subiendo: ${uploadError.message}`);
+                    errorCount++;
+                }
+            } else {
+                const saving = Math.round(((sizeKB - newSizeKB) / sizeKB) * 100);
+                log(`✅ Optimizado: ${Math.round(newSizeKB)}KB (Ahorro: ${saving}%)`);
+                compressedCount++;
+            }
+
+        } catch (e: any) {
+            log(`❌ Excepción en ${ev.title}: ${e.message}`);
+            errorCount++;
+        }
+    }
+
+    log(`🏁 FINALIZADO. Comprimidas: ${compressedCount}, Saltadas: ${skippedCount}, Errores: ${errorCount}`);
+};
+
+// Helper to clean JSON string from Markdown
+function cleanJsonString(str: string): string {
+    if (!str) return "{}";
+    let cleaned = str.trim();
+    // Remove markdown code blocks if present
+    if (cleaned.startsWith("```json")) {
+        cleaned = cleaned.replace(/^```json\s*/, "").replace(/\s*```$/, "");
+    } else if (cleaned.startsWith("```")) {
+        cleaned = cleaned.replace(/^```\s*/, "").replace(/\s*```$/, "");
+    }
+    return cleaned;
+}
+
+// --- NEW FUNCTION: BATCH SCORE POOPS ---
+export const batchScorePoops = async (
+    settings: SupabaseSettings,
+    onProgress: (current: number, total: number, msg: string) => void,
+    onLog: (msg: string) => void,
+    accessToken?: string
+): Promise<void> => {
+    const log = (msg: string) => onLog(`[${new Date().toLocaleTimeString()}] ${msg}`);
+
+    try {
+        const apiKey = await getGeminiApiKeyInternal(settings, accessToken);
+        const ai = new GoogleGenAI({ apiKey });
+
+        // Create client
+        const client = createClient(settings.supabaseUrl, settings.supabaseKey, {
+            global: { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined }
+        });
+
+        // CHANGED: Limited to last 15 unscored items for micro-batch processing
+        log("🔍 Buscando últimas 15 'Cacas' sin puntuación...");
+
+        const { data: events, error } = await client
+            .from('events')
+            .select('id, title, description, photo_url, date')
+            .eq('record_type', 'Caca')
+            .is('poop_score', null)
+            .order('date', { ascending: false }) // Process newest first (chipping away at recent history)
+            .limit(15);
+
+        if (error) throw new Error(error.message);
+
+        if (!events || events.length === 0) {
+            log("✅ No hay más registros pendientes (o has completado el lote).");
+            return;
+        }
+
+        const total = events.length;
+        log(`📋 Lote encontrado: ${total} registros. Usando Gemini 1.5 Flash...`);
+
+        let updatedCount = 0;
+        let failureCount = 0;
+
+        for (let i = 0; i < total; i++) {
+            const ev = events[i];
+            onProgress(i + 1, total, `Puntuando (${i+1}/${total}): ${ev.title}`);
+
+            try {
+                // Determine content for AI
+                const prompt = `Analiza este registro de heces de perro y asigna una puntuación del 1 al 10 (1=Diarrea grave, 10=Perfecta). 
+                Solo devuelve el JSON puro: {"score": number}.
+                Título: ${ev.title}. Descripción: ${ev.description || "N/A"}.`;
+
+                const parts: any[] = [{ text: prompt }];
+
+                // Try to add image if exists
+                if (ev.photo_url) {
+                    try {
+                        const imgBase64 = await urlToBase64(ev.photo_url);
+                        if (imgBase64 && imgBase64.length > 100) {
+                            parts.push({
+                                inlineData: {
+                                    mimeType: 'image/jpeg',
+                                    data: imgBase64.split(',')[1]
+                                }
+                            });
+                        }
+                    } catch (imgErr) {
+                        // Fail gracefully on image, continue with text
+                        log(`⚠️ Imagen falló en ${ev.title}, usando solo texto.`);
+                    }
+                }
+
+                // Call Gemini with RETRIES
+                let resultText = "";
+                let success = false;
+                
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    try {
+                        // CHANGED: Use gemini-1.5-flash for stability/limits
+                        const response = await ai.models.generateContent({
+                            model: 'gemini-1.5-flash',
+                            contents: { parts },
+                            config: {
+                                responseMimeType: 'application/json',
+                                responseSchema: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        score: { type: Type.INTEGER }
+                                    }
+                                }
+                            }
+                        });
+                        resultText = response.text || "";
+                        if (resultText) {
+                            success = true;
+                            break;
+                        }
+                    } catch (err: any) {
+                        const isRateLimit = err.message?.includes('429') || err.status === 429;
+                        if (attempt < 2) {
+                            // Backoff: 2s, 4s
+                            const delay = (attempt + 1) * 2000;
+                            if (isRateLimit) log(`⏳ Rate limit. Esperando ${delay}ms...`);
+                            await new Promise(r => setTimeout(r, delay));
+                        }
+                    }
+                }
+
+                if (!success || !resultText) {
+                    failureCount++;
+                    continue; // Skip this event
+                }
+
+                const cleanedText = cleanJsonString(resultText);
+                const result = JSON.parse(cleanedText);
+                
+                if (result.score) {
+                    // Update DB
+                    const { error: updateError } = await client
+                        .from('events')
+                        .update({ poop_score: result.score })
+                        .eq('id', ev.id);
+                    
+                    if (updateError) {
+                        log(`❌ Error guardando score para ${ev.title}: ${updateError.message}`);
+                        failureCount++;
+                    } else {
+                        updatedCount++;
+                    }
+                } else {
+                    failureCount++;
+                }
+
+                // CHANGED: Increased delay to 5 seconds to be safe with rate limits
+                await new Promise(r => setTimeout(r, 5000)); 
+
+            } catch (e: any) {
+                log(`❌ Error procesando ${ev.title}: ${e.message}`);
+                failureCount++;
+            }
+        }
+
+        log(`🏁 LOTE FINALIZADO. Puntuados: ${updatedCount}/${total}.`);
+
+    } catch (e: any) {
+        log(`❌ Error General: ${e.message}`);
+    }
+};
+
 
 // --- MIGRATION FUNCTION ---
 export const startMigration = async (
@@ -185,7 +573,8 @@ export const startMigration = async (
     supabaseSettings: SupabaseSettings,
     filters: { startDate?: string, endDate?: string },
     onProgress: (current: number, total: number, status: string) => void,
-    onLog: (msg: string) => void
+    onLog: (msg: string) => void,
+    accessToken?: string
 ): Promise<{ success: boolean }> => {
     
     const log = (msg: string) => {
@@ -331,10 +720,9 @@ export const startMigration = async (
                 synced: false
             };
 
-            // NOTE: Migration runs with generic settings, usually admin or special key.
-            // If running from client, RLS might block if not authenticated.
-            // For now passing undefined token.
-            const saveResult = await saveEventToSupabase(newEvent, supabaseSettings, undefined);
+            // Pass accessToken to ensure ownership is correctly assigned (if implicit in backend trigger) 
+            // and RLS allows insert.
+            const saveResult = await saveEventToSupabase(newEvent, supabaseSettings, accessToken);
             
             if (!saveResult.success) {
                 log(`   ❌ Error guardando: ${saveResult.error}`);

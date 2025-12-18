@@ -1,6 +1,8 @@
+
+
 import React, { useState, useEffect } from 'react';
 import { DogEvent, HealthStatus, RecordType } from '../types';
-import { HEALTH_STATUS_COLORS, Icons } from '../constants';
+import { HEALTH_STATUS_COLORS, Icons, getPoopScoreColor } from '../constants';
 import ImageViewer from './ImageViewer';
 
 interface EventFormProps {
@@ -39,6 +41,7 @@ const EventForm: React.FC<EventFormProps> = ({
     photoBase64: undefined,
     photoUrl: undefined,
     fileBase64: undefined,
+    poopScore: undefined,
     ...initialData
   });
   
@@ -65,6 +68,11 @@ const EventForm: React.FC<EventFormProps> = ({
       ...prev,
       [name]: name === 'weight' ? (value !== '' ? parseFloat(value) : undefined) : value
     }));
+  };
+
+  const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (!canEdit) return;
+      setFormData(prev => ({ ...prev, poopScore: parseInt(e.target.value) }));
   };
 
   // Compress image to avoid LocalStorage quota limits (approx 5MB limit)
@@ -175,6 +183,7 @@ const EventForm: React.FC<EventFormProps> = ({
                 healthStatus: formData.healthStatus || null,
                 description: formData.description || "", // Allow empty string
                 weight: formData.weight !== undefined ? formData.weight : undefined,
+                poopScore: formData.recordType === RecordType.POOP ? formData.poopScore : undefined,
                 photoBase64: formData.photoBase64,
                 photoUrl: formData.photoUrl,
                 fileBase64: formData.fileBase64,
@@ -234,6 +243,31 @@ const EventForm: React.FC<EventFormProps> = ({
           ))}
         </select>
       </div>
+
+      {/* SPECIAL FIELD: POOP SCORE */}
+      {formData.recordType === RecordType.POOP && (
+          <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 animate-fade-in-down">
+              <label className="flex justify-between text-sm font-medium text-slate-700 mb-2">
+                  <span>Puntuación de Caca (Escala 1-10)</span>
+                  <span className={`px-2 rounded font-bold ${getPoopScoreColor(formData.poopScore || 5)}`}>{formData.poopScore || 5}</span>
+              </label>
+              <input 
+                type="range" 
+                min="1" 
+                max="10" 
+                step="1"
+                value={formData.poopScore || 5}
+                onChange={handleSliderChange}
+                className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                disabled={!canEdit}
+              />
+              <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+                  <span>Mala (1)</span>
+                  <span>Regular (5)</span>
+                  <span>Perfecta (10)</span>
+              </div>
+          </div>
+      )}
 
       {/* Date & Time Row */}
       <div className="grid grid-cols-2 gap-4">

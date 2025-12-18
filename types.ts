@@ -1,3 +1,5 @@
+
+
 export enum HealthStatus {
   NORMAL = 'Normal',
   OBSERVATION = 'En observación',
@@ -81,6 +83,7 @@ export interface DogEvent {
   healthStatus?: HealthStatus | null;
   weight?: number;
   description: string;
+  poopScore?: number; // 1-10 Scale
   
   // Local preview data (Base64)
   photoBase64?: string; 
@@ -114,6 +117,26 @@ export interface PetNote {
     }
 }
 
+// --- TASKS ---
+export interface PetTask {
+    id: string;
+    pet_id: string;
+    title: string;
+    assigned_to?: string; // User ID
+    created_by?: string; // User ID
+    is_completed: boolean;
+    created_at: string;
+    completed_at?: string;
+    // Joined Data
+    assignee?: {
+        full_name?: string;
+        email: string;
+    };
+    creator?: {
+        full_name?: string;
+    };
+}
+
 // Structure expected from Gemini analysis
 export interface AIAnalysisResult {
   title: string;
@@ -121,6 +144,7 @@ export interface AIAnalysisResult {
   healthStatus?: HealthStatus | null;
   description: string;
   weight?: number;
+  poopScore?: number;
   // Extracted temporal data
   date?: string; // YYYY-MM-DD
   time?: string; // HH:MM

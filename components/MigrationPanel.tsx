@@ -1,14 +1,19 @@
+
+
+
+
 import React, { useState, useRef, useEffect } from 'react';
 import { SupabaseSettings, Pet } from '../types';
-import { startMigration, deleteMigratedEvents, assignOrphanEvents } from '../services/migrationService';
+import { startMigration, deleteMigratedEvents, assignOrphanEvents, optimizeExistingPhotos, batchScorePoops } from '../services/migrationService';
 
 interface MigrationPanelProps {
     supabaseSettings: SupabaseSettings;
     currentPet?: Pet | null;
     currentUser?: any;
+    accessToken?: string;
 }
 
-const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings, currentPet, currentUser }) => {
+const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings, currentPet, currentUser, accessToken }) => {
     const [isOpen, setIsOpen] = useState(false);
     
     // Inputs
@@ -17,7 +22,7 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings, curre
     const [startDate, setStartDate] = useState('');
     const [endDate, setEndDate] = useState('');
 
-    const [status, setStatus] = useState<'idle' | 'confirming_migration' | 'confirming_deletion' | 'confirming_rescue' | 'running' | 'done'>('idle');
+    const [status, setStatus] = useState<'idle' | 'confirming_migration' | 'confirming_deletion' | 'confirming_rescue' | 'confirming_optimization' | 'confirming_scoring' | 'running' | 'done'>('idle');
     const [progress, setProgress] = useState({ current: 0, total: 0, msg: '' });
     const [logs, setLogs] = useState<string[]>([]);
     const logsEndRef = useRef<HTMLDivElement>(null);
@@ -30,7 +35,7 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings, curre
     }, [logs]);
 
     // Helpers to manage UI blocking
-    const handleActionClick = (e: React.MouseEvent, action: 'migration' | 'deletion' | 'rescue') => {
+    const handleActionClick = (e: React.MouseEvent, action: 'migration' | 'deletion' | 'rescue' | 'optimization' | 'scoring') => {
         e.preventDefault();
         e.stopPropagation();
 
@@ -50,16 +55,20 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings, curre
 
         if (action === 'migration') setStatus('confirming_migration');
         else if (action === 'deletion') setStatus('confirming_deletion');
-        else setStatus('confirming_rescue');
+        else if (action === 'rescue') setStatus('confirming_rescue');
+        else if (action === 'scoring') setStatus('confirming_scoring');
+        else setStatus('confirming_optimization');
     };
 
-    const runProcess = (type: 'migration' | 'deletion' | 'rescue') => {
+    const runProcess = (type: 'migration' | 'deletion' | 'rescue' | 'optimization' | 'scoring') => {
         setStatus('running');
-        const initialLog = type === 'migration' 
-            ? ["🚀 Inicializando migración...", `📅 Filtro: ${startDate || 'Inicio'} a ${endDate || 'Fin'}`] 
-            : type === 'deletion'
-                ? ["🗑️ Inicializando borrado...", `📅 Filtro: ${startDate || 'Inicio'} a ${endDate || 'Fin'}`]
-                : ["🛟 Rescatando huérfanos..."];
+        let initialLog: string[] = [];
+
+        if (type === 'migration') initialLog = ["🚀 Inicializando migración...", `📅 Filtro: ${startDate || 'Inicio'} a ${endDate || 'Fin'}`];
+        else if (type === 'deletion') initialLog = ["🗑️ Inicializando borrado...", `📅 Filtro: ${startDate || 'Inicio'} a ${endDate || 'Fin'}`];
+        else if (type === 'rescue') initialLog = ["🛟 Rescatando huérfanos..."];
+        else if (type === 'optimization') initialLog = ["⚡ Iniciando optimización de imágenes...", "Esto puede tardar unos minutos."];
+        else if (type === 'scoring') initialLog = ["💩 Iniciando IA para puntuar cacas antiguas...", "Esto consumirá tokens de IA."];
         
         setLogs(initialLog);
         
@@ -78,13 +87,15 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings, curre
                         supabaseSettings,
                         filters,
                         (current, total, msg) => setProgress({ current, total, msg }),
-                        logger
+                        logger,
+                        accessToken
                     );
                 } else if (type === 'deletion') {
                     await deleteMigratedEvents(
                         supabaseSettings,
                         filters,
-                        logger
+                        logger,
+                        accessToken
                     );
                 } else if (type === 'rescue') {
                     if (currentPet && currentUser) {
@@ -92,11 +103,26 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings, curre
                             supabaseSettings,
                             currentUser.id,
                             currentPet.id,
-                            logger
+                            logger,
+                            accessToken
                         );
                     } else {
                         throw new Error("Faltan datos de usuario/mascota.");
                     }
+                } else if (type === 'optimization') {
+                    await optimizeExistingPhotos(
+                        supabaseSettings,
+                        (current, total, msg) => setProgress({ current, total, msg }),
+                        logger,
+                        accessToken
+                    );
+                } else if (type === 'scoring') {
+                    await batchScorePoops(
+                        supabaseSettings,
+                        (current, total, msg) => setProgress({ current, total, msg }),
+                        logger,
+                        accessToken
+                    );
                 }
                 
                 setLogs(prev => [...prev, "🏁 OPERACIÓN FINALIZADA."]);
@@ -204,6 +230,23 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings, curre
                             Importar de Notion (con Filtro)
                         </button>
                         
+                        <div className="flex gap-2">
+                            <button 
+                                type="button"
+                                onClick={(e) => handleActionClick(e, 'optimization')}
+                                className="flex-1 py-2.5 bg-amber-500 text-white rounded-lg font-bold text-sm shadow-sm active:scale-95"
+                            >
+                                ⚡ Optimizar Fotos
+                            </button>
+                            <button 
+                                type="button"
+                                onClick={(e) => handleActionClick(e, 'scoring')}
+                                className="flex-1 py-2.5 bg-fuchsia-600 text-white rounded-lg font-bold text-sm shadow-sm active:scale-95"
+                            >
+                                🤖 Puntuar Cacas
+                            </button>
+                        </div>
+
                         <button 
                             type="button"
                             onClick={(e) => handleActionClick(e, 'rescue')}
@@ -243,6 +286,30 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings, curre
                         <div className="flex gap-2">
                             <button type="button" onClick={() => setStatus('idle')} className="flex-1 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg text-xs font-bold">Cancelar</button>
                             <button type="button" onClick={() => runProcess('rescue')} className="flex-1 py-2 bg-teal-600 text-white rounded-lg text-xs font-bold shadow-sm">Sí, Asignar</button>
+                        </div>
+                    </div>
+                )}
+
+                {status === 'confirming_optimization' && (
+                    <div className="bg-amber-50 p-3 rounded-lg border border-amber-100">
+                        <p className="text-xs font-bold text-amber-900 mb-2">
+                            Esto descargará, comprimirá y re-subirá todas las fotos grandes. Puede tardar un rato. ¿Seguro?
+                        </p>
+                        <div className="flex gap-2">
+                            <button type="button" onClick={() => setStatus('idle')} className="flex-1 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg text-xs font-bold">Cancelar</button>
+                            <button type="button" onClick={() => runProcess('optimization')} className="flex-1 py-2 bg-amber-500 text-white rounded-lg text-xs font-bold shadow-sm">Sí, Optimizar</button>
+                        </div>
+                    </div>
+                )}
+
+                 {status === 'confirming_scoring' && (
+                    <div className="bg-fuchsia-50 p-3 rounded-lg border border-fuchsia-100">
+                        <p className="text-xs font-bold text-fuchsia-900 mb-2">
+                            La IA leerá todas las descripciones de 'Caca' sin puntuar y asignará una nota (1-10).
+                        </p>
+                        <div className="flex gap-2">
+                            <button type="button" onClick={() => setStatus('idle')} className="flex-1 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg text-xs font-bold">Cancelar</button>
+                            <button type="button" onClick={() => runProcess('scoring')} className="flex-1 py-2 bg-fuchsia-600 text-white rounded-lg text-xs font-bold shadow-sm">Sí, Puntuar</button>
                         </div>
                     </div>
                 )}

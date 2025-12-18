@@ -1,3 +1,4 @@
+
 import React from 'react';
 
 export const HEALTH_STATUS_COLORS = {
@@ -7,6 +8,15 @@ export const HEALTH_STATUS_COLORS = {
   'Preocupante': 'bg-orange-100 text-orange-800 border-orange-200',
   'Urgente': 'bg-red-100 text-red-800 border-red-200',
   'En recuperación': 'bg-teal-100 text-teal-800 border-teal-200',
+};
+
+// Returns Tailwind classes based on 0-10 score
+export const getPoopScoreColor = (score: number) => {
+    if (score <= 1) return 'bg-red-900 text-red-100 border-red-950'; // Very Bad
+    if (score <= 4) return 'bg-red-500 text-white border-red-600';     // Bad
+    if (score <= 6) return 'bg-yellow-400 text-yellow-900 border-yellow-500'; // Regular
+    if (score <= 8) return 'bg-lime-400 text-lime-900 border-lime-500';   // Good
+    return 'bg-green-600 text-white border-green-700';             // Perfect
 };
 
 // Simple SVG Icons components
@@ -19,6 +29,18 @@ export const Icons = {
   Board: ({ className }: { className?: string }) => (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><path d="M9 14h6"/><path d="M9 18h6"/><path d="M9 10h6"/>
+    </svg>
+  ),
+  Stats: ({ className }: { className?: string }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <line x1="18" y1="20" x2="18" y2="10"></line>
+      <line x1="12" y1="20" x2="12" y2="4"></line>
+      <line x1="6" y1="20" x2="6" y2="14"></line>
+    </svg>
+  ),
+  Activity: ({ className }: { className?: string }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
     </svg>
   ),
   Plus: ({ className }: { className?: string }) => (
@@ -82,7 +104,7 @@ export const Icons = {
   ),
   Sparkles: ({ className }: { className?: string }) => (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+      <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L12 3Z"/>
       <path d="M5 3v4"/><path d="M9 5H1"/><path d="M19 18v4"/><path d="M23 20h-8"/>
     </svg>
   ),
@@ -105,6 +127,12 @@ export const Icons = {
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <line x1="12" y1="17" x2="12" y2="22"></line>
       <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"></path>
+    </svg>
+  ),
+  CheckSquare: ({ className }: { className?: string }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <polyline points="9 11 12 14 22 4"></polyline>
+      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
     </svg>
   )
 };
