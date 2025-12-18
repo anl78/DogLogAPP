@@ -163,12 +163,65 @@ const App: React.FC = () => {
                         <button onClick={() => setShowFilters(!showFilters)} className={`p-2 rounded-full ${showFilters ? 'bg-blue-100 text-blue-600' : 'bg-slate-100'}`}><Icons.Filter className="w-5 h-5"/></button>
                     </header>
                     <div className="flex-1 overflow-y-auto p-4 pb-28 space-y-4 no-scrollbar">
-                        {events.map(ev => (
-                            <div key={ev.id} onClick={() => { setDraftEvent(ev); setInputMethod('manual'); setView('add'); }} className="bg-white rounded-2xl p-4 shadow-sm border cursor-pointer">
-                                <h3 className="font-bold text-lg mb-2">{ev.title}</h3>
-                                <p className="text-sm text-slate-600 line-clamp-3">{ev.description}</p>
+                        {events.map(ev => {
+                            const eventPhoto = ev.photoUrl || ev.photoBase64;
+                            return (
+                                <div 
+                                    key={ev.id} 
+                                    onClick={() => { setDraftEvent(ev); setInputMethod('manual'); setView('add'); }} 
+                                    className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100 cursor-pointer active:scale-[0.98] transition-transform flex flex-row items-center"
+                                >
+                                    <div className="p-4 flex-1">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div className="flex-1 pr-2">
+                                                <h3 className="font-bold text-lg text-slate-800 leading-tight mb-1">{ev.title}</h3>
+                                                <div className="flex flex-wrap gap-2 items-center">
+                                                    <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full uppercase tracking-wider">{ev.recordType}</span>
+                                                    <span className="text-[10px] text-slate-400">{ev.time}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        {ev.description && <p className="text-sm text-slate-600 line-clamp-2 mb-3">{ev.description}</p>}
+                                        <div className="flex items-center justify-between mt-auto">
+                                            <div className="flex gap-2">
+                                                {ev.healthStatus && (
+                                                    <span className={`text-[10px] px-2 py-0.5 rounded-md border ${HEALTH_STATUS_COLORS[ev.healthStatus]}`}>
+                                                        {ev.healthStatus}
+                                                    </span>
+                                                )}
+                                                {ev.recordType === RecordType.POOP && ev.poopScore && (
+                                                    <span className={`text-[10px] px-2 py-0.5 rounded-md border font-bold ${getPoopScoreColor(ev.poopScore)}`}>
+                                                        Score: {ev.poopScore}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <span className="text-[10px] text-slate-400">{ev.date}</span>
+                                        </div>
+                                    </div>
+                                    {eventPhoto && (
+                                        <div className="w-24 h-24 m-4 shrink-0 rounded-xl overflow-hidden bg-slate-100 shadow-inner">
+                                            <img src={eventPhoto} alt={ev.title} className="w-full h-full object-cover" />
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                        {events.length === 0 && !isSyncing && (
+                            <div className="flex flex-col items-center justify-center py-20 text-slate-400">
+                                <Icons.Activity className="w-12 h-12 mb-4 opacity-20" />
+                                <p className="text-sm">No hay eventos registrados.</p>
+                                <button onClick={() => setView('add')} className="mt-4 text-blue-600 font-bold text-sm">Crear primer registro</button>
                             </div>
-                        ))}
+                        )}
+                        {hasMore && (
+                            <button 
+                                onClick={() => fetchEvents()} 
+                                disabled={isSyncing}
+                                className="w-full py-4 text-sm text-blue-600 font-bold"
+                            >
+                                {isSyncing ? 'Cargando...' : 'Cargar más eventos'}
+                            </button>
+                        )}
                     </div>
                 </div>
             )}
@@ -186,7 +239,6 @@ const App: React.FC = () => {
                      </div>
                      {currentPet && session?.user && <TeamManager settings={settings} currentPet={currentPet} currentUserId={session.user.id} accessToken={session.access_token}/>}
                      
-                     {/* RESTRICTION: Only the pet owner/admin can see migration tools */}
                      {currentPet?.owner_id === session?.user?.id && (
                         <MigrationPanel supabaseSettings={settings} currentPet={currentPet} currentUser={session?.user} accessToken={session.access_token}/>
                      )}
