@@ -185,7 +185,12 @@ const App: React.FC = () => {
                         </select>
                      </div>
                      {currentPet && session?.user && <TeamManager settings={settings} currentPet={currentPet} currentUserId={session.user.id} accessToken={session.access_token}/>}
-                     <MigrationPanel supabaseSettings={settings} currentPet={currentPet} currentUser={session?.user} accessToken={session.access_token}/>
+                     
+                     {/* RESTRICTION: Only the pet owner/admin can see migration tools */}
+                     {currentPet?.owner_id === session?.user?.id && (
+                        <MigrationPanel supabaseSettings={settings} currentPet={currentPet} currentUser={session?.user} accessToken={session.access_token}/>
+                     )}
+
                      <div className="mt-10 border-t pt-6">
                         <button onClick={handleLogout} className="w-full py-3 bg-slate-100 text-slate-600 rounded-xl font-bold mb-3">Cerrar Sesión</button>
                         <div className="p-4 bg-red-50 rounded-2xl border border-red-100">
