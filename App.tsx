@@ -82,6 +82,16 @@ const App: React.FC = () => {
     if (session && currentPet) fetchEvents(true);
   }, [filterConfig, currentPet, session]);
 
+  // Handle View Change Logic for Drafts
+  useEffect(() => {
+    if (view === 'add' && !draftEvent) {
+        setInputMethod('menu');
+    }
+    if (view !== 'add') {
+        setDraftEvent(undefined);
+    }
+  }, [view]);
+
   const fetchEvents = async (reset: boolean = false) => {
     if (!currentPet || !session) return;
     setIsSyncing(true);
@@ -90,6 +100,84 @@ const App: React.FC = () => {
     if (reset) { setEvents(newBatch); setPage(1); } else { setEvents(prev => [...prev, ...newBatch]); setPage(prev => prev + 1); }
     setHasMore(newBatch.length === PAGE_SIZE);
     setIsSyncing(false);
+  };
+
+  const resizeImageForAI = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX_WIDTH = 800;
+          const scaleSize = MAX_WIDTH / img.width;
+          const finalWidth = scaleSize < 1 ? MAX_WIDTH : img.width;
+          const finalHeight = scaleSize < 1 ? img.height * scaleSize : img.height;
+          canvas.width = finalWidth;
+          canvas.height = finalHeight;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+             resolve(canvas.toDataURL('image/jpeg', 0.7));
+          } else {
+             resolve(event.target?.result as string);
+          }
+        };
+      };
+      reader.onerror = reject;
+    });
+  };
+
+  const handleAudioCaptured = async (base64Audio: string) => {
+      setAiProcessing(true);
+      try {
+          const result = await analyzeAudio(base64Audio, settings, session?.access_token);
+          setDraftEvent({
+              title: result.title,
+              recordType: result.recordType,
+              healthStatus: result.healthStatus,
+              description: result.description,
+              weight: result.weight,
+              date: result.date || new Date().toISOString().split('T')[0],
+              time: result.time || new Date().toLocaleTimeString('es-ES', {hour: '2-digit', minute:'2-digit'}),
+              poopScore: result.poopScore
+          });
+          setInputMethod('manual');
+      } catch (error: any) {
+          alert("Error analizando audio: " + error.message);
+      } finally {
+          setAiProcessing(false);
+      }
+  };
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      
+      setAiProcessing(true);
+      try {
+          const base64 = await resizeImageForAI(file);
+          const result = await analyzeImage(base64, settings, session?.access_token);
+          
+          setDraftEvent({
+              title: result.title,
+              recordType: result.recordType,
+              healthStatus: result.healthStatus,
+              description: result.description,
+              weight: result.weight,
+              date: result.date || new Date().toISOString().split('T')[0],
+              time: result.time || new Date().toLocaleTimeString('es-ES', {hour: '2-digit', minute:'2-digit'}),
+              poopScore: result.poopScore,
+              photoBase64: base64
+          });
+          setInputMethod('manual');
+      } catch (error: any) {
+          alert("Error analizando imagen: " + error.message);
+      } finally {
+          setAiProcessing(false);
+      }
   };
 
   const handleLogout = async () => { const client = createClient(settings.supabaseUrl, settings.supabaseKey); await client.auth.signOut(); };
@@ -169,19 +257,21 @@ const App: React.FC = () => {
                                 <div 
                                     key={ev.id} 
                                     onClick={() => { setDraftEvent(ev); setInputMethod('manual'); setView('add'); }} 
-                                    className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100 cursor-pointer active:scale-[0.98] transition-transform flex flex-row items-center"
+                                    className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100 cursor-pointer active:scale-[0.98] transition-transform flex flex-row items-stretch min-h-[140px]"
                                 >
-                                    <div className="p-4 flex-1">
-                                        <div className="flex justify-between items-start mb-2">
-                                            <div className="flex-1 pr-2">
-                                                <h3 className="font-bold text-lg text-slate-800 leading-tight mb-1">{ev.title}</h3>
-                                                <div className="flex flex-wrap gap-2 items-center">
-                                                    <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full uppercase tracking-wider">{ev.recordType}</span>
-                                                    <span className="text-[10px] text-slate-400">{ev.time}</span>
+                                    <div className="p-4 flex-1 flex flex-col justify-between">
+                                        <div>
+                                            <div className="flex justify-between items-start mb-2">
+                                                <div className="flex-1 pr-2">
+                                                    <h3 className="font-bold text-lg text-slate-800 leading-tight mb-1">{ev.title}</h3>
+                                                    <div className="flex flex-wrap gap-2 items-center">
+                                                        <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full uppercase tracking-wider">{ev.recordType}</span>
+                                                        <span className="text-[10px] text-slate-400">{ev.time}</span>
+                                                    </div>
                                                 </div>
                                             </div>
+                                            {ev.description && <p className="text-sm text-slate-600 line-clamp-2 mb-3 leading-snug">{ev.description}</p>}
                                         </div>
-                                        {ev.description && <p className="text-sm text-slate-600 line-clamp-2 mb-3">{ev.description}</p>}
                                         <div className="flex items-center justify-between mt-auto">
                                             <div className="flex gap-2">
                                                 {ev.healthStatus && (
@@ -199,7 +289,7 @@ const App: React.FC = () => {
                                         </div>
                                     </div>
                                     {eventPhoto && (
-                                        <div className="w-24 h-24 m-4 shrink-0 rounded-xl overflow-hidden bg-slate-100 shadow-inner">
+                                        <div className="w-28 shrink-0 overflow-hidden bg-slate-100">
                                             <img src={eventPhoto} alt={ev.title} className="w-full h-full object-cover" />
                                         </div>
                                     )}
@@ -254,8 +344,70 @@ const App: React.FC = () => {
                  </div>
             )}
             {view === 'add' && (
-                <div className="flex-1 overflow-y-auto p-4 bg-slate-50 h-full">
-                    <EventForm initialData={draftEvent} onSubmit={handleEventSubmit} onCancel={()=>setView('home')} onDelete={draftEvent?.id?()=>handleDeleteEvent(draftEvent as DogEvent):undefined} canEdit={permissions.can_edit !== 'none'} canDelete={permissions.can_delete !== 'none'}/>
+                <div className="flex-1 overflow-y-auto p-4 bg-slate-50 h-full relative">
+                    
+                    {/* MODE SELECTION MENU */}
+                    {inputMethod === 'menu' && (
+                        <div className="flex flex-col items-center justify-center h-full space-y-6 animate-fade-in-up">
+                             <h2 className="text-2xl font-bold text-slate-800 mb-4">Nuevo Registro</h2>
+                             
+                             {/* Voice Button */}
+                             <button 
+                                onClick={() => setInputMethod('voice')}
+                                className="w-full py-6 bg-white border-2 border-blue-100 rounded-3xl shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all"
+                             >
+                                <div className="p-4 bg-blue-100 text-blue-600 rounded-full">
+                                    <Icons.Mic className="w-8 h-8" />
+                                </div>
+                                <span className="font-bold text-slate-700">Nota de Voz (IA)</span>
+                             </button>
+
+                             {/* Photo Button */}
+                             <label className="w-full py-6 bg-white border-2 border-purple-100 rounded-3xl shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all cursor-pointer">
+                                <div className="p-4 bg-purple-100 text-purple-600 rounded-full">
+                                    <Icons.Camera className="w-8 h-8" />
+                                </div>
+                                <span className="font-bold text-slate-700">Analizar Foto (IA)</span>
+                                <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                             </label>
+
+                             {/* Manual Button */}
+                             <button 
+                                onClick={() => setInputMethod('manual')}
+                                className="w-full py-6 bg-white border-2 border-slate-100 rounded-3xl shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all"
+                             >
+                                <div className="p-4 bg-slate-100 text-slate-600 rounded-full">
+                                    <Icons.CheckSquare className="w-8 h-8" />
+                                </div>
+                                <span className="font-bold text-slate-700">Manual</span>
+                             </button>
+
+                              {/* Cancel */}
+                             <button onClick={() => setView('home')} className="mt-8 text-slate-400 font-medium">Cancelar</button>
+                        </div>
+                    )}
+
+                    {/* VOICE MODE */}
+                    {inputMethod === 'voice' && (
+                        <div className="h-full flex flex-col items-center justify-center">
+                             <h3 className="text-xl font-bold text-slate-700 mb-8">Grabando...</h3>
+                             <AudioRecorder onAudioCaptured={handleAudioCaptured} isProcessing={aiProcessing} />
+                             <button onClick={() => setInputMethod('menu')} className="mt-12 text-slate-400">Cancelar</button>
+                        </div>
+                    )}
+
+                    {/* MANUAL MODE */}
+                    {inputMethod === 'manual' && (
+                        <EventForm initialData={draftEvent} onSubmit={handleEventSubmit} onCancel={()=>setView('home')} onDelete={draftEvent?.id?()=>handleDeleteEvent(draftEvent as DogEvent):undefined} canEdit={permissions.can_edit !== 'none'} canDelete={permissions.can_delete !== 'none'}/>
+                    )}
+                    
+                    {/* LOADING OVERLAY FOR AI */}
+                    {aiProcessing && (
+                         <div className="absolute inset-0 bg-white/80 z-50 flex flex-col items-center justify-center backdrop-blur-sm">
+                            <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                            <p className="font-bold text-slate-700">Analizando con IA...</p>
+                         </div>
+                    )}
                 </div>
             )}
             <Navbar currentView={view} setView={setView} hasUnread={hasUnreadMessages} />
