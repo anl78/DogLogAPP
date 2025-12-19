@@ -1,14 +1,13 @@
 
-
-
 import { GoogleGenAI, Type, FunctionDeclaration } from "@google/genai";
 import { createClient } from '@supabase/supabase-js';
 import { AIAnalysisResult, HealthStatus, RecordType, SupabaseSettings, DogEvent, ChatMessage } from "../types";
 import { searchEvents } from "./supabaseService";
 
 // --- CONFIGURATION ---
-// Priority list: Latest & Fastest -> Stable Backup -> Legacy Workhorse
-const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+// Priority list: Latest & Fastest -> Stable Backup
+// Removed gemini-1.5-flash as it is causing 404 errors in v1beta
+const FALLBACK_MODELS = ['gemini-2.0-flash', 'gemini-2.0-flash-lite-preview-02-05'];
 
 const SYSTEM_INSTRUCTION = `
 Eres un asistente veterinario experto. Tu tarea es analizar la transcripción o el audio de un dueño de perro describiendo un evento.
@@ -124,7 +123,9 @@ async function generateWithFallback(
                 // These won't be fixed by retrying or switching models.
                 const status = error.status || error.response?.status;
                 if (status === 400 || status === 401 || status === 403 || status === 404) {
-                    throw error;
+                    // Log but don't throw immediately if we have other models to try
+                    // console.warn(`Model ${model} failed with ${status}`, error);
+                    break; // Break attempt loop, try next model
                 }
 
                 // If 503 (Service Unavailable) or 429 (Too Many Requests), wait and retry

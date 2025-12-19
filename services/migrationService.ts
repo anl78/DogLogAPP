@@ -454,7 +454,7 @@ export const batchScorePoops = async (
         }
 
         const total = events.length;
-        log(`📋 Lote encontrado: ${total} registros. Usando Gemini 1.5 Flash...`);
+        log(`📋 Lote encontrado: ${total} registros. Usando Gemini 2.0 Flash...`);
 
         let updatedCount = 0;
         let failureCount = 0;
@@ -495,9 +495,9 @@ export const batchScorePoops = async (
                 
                 for (let attempt = 0; attempt < 3; attempt++) {
                     try {
-                        // CHANGED: Use gemini-1.5-flash for stability/limits
+                        // CHANGED: Use gemini-2.0-flash for stability/limits
                         const response = await ai.models.generateContent({
-                            model: 'gemini-1.5-flash',
+                            model: 'gemini-2.0-flash',
                             contents: { parts },
                             config: {
                                 responseMimeType: 'application/json',
