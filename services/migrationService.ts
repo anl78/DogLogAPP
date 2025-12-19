@@ -4,33 +4,41 @@ import { saveEventToSupabase } from './supabaseService';
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenAI, Type } from "@google/genai";
 
-// Need to duplicate this to avoid circular dependencies if getApiKey is in geminiService which imports supabaseService
-// Best practice: Extract this helper to a 'config.ts' or 'authService.ts', but for now duplicating logic.
-async function getGeminiApiKeyInternal(settings: SupabaseSettings, accessToken?: string): Promise<string> {
-    // 1. Try Production Env Var (Vercel)
+// --- Multi-Key Helper for Migration Service ---
+async function getGeminiApiKeysInternal(settings: SupabaseSettings, accessToken?: string): Promise<string[]> {
+    const keys: string[] = [];
+
+    // 1. Try Env Vars
     try {
         // @ts-ignore
-        const envKey = import.meta.env.VITE_GEMINI_API_KEY;
-        if (envKey && envKey.length > 10) return envKey;
-    } catch (e) {
-        // Ignore error if env not available
-    }
+        if (import.meta.env.VITE_GEMINI_API_KEY) keys.push(import.meta.env.VITE_GEMINI_API_KEY);
+        // @ts-ignore
+        if (import.meta.env.VITE_GEMINI_API_KEY_BACKUP) keys.push(import.meta.env.VITE_GEMINI_API_KEY_BACKUP);
+    } catch (e) {}
 
-    // 2. Fallback: Fetch from Supabase DB (Development / Local)
+    if (keys.length > 0) return keys;
+
+    // 2. Fetch from DB
     const client = createClient(settings.supabaseUrl, settings.supabaseKey, {
         global: { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined }
     });
 
     const { data } = await client
         .from('app_secrets')
-        .select('value')
-        .eq('key_name', 'GEMINI_API_KEY')
-        .single();
+        .select('key_name, value')
+        .in('key_name', ['GEMINI_API_KEY', 'GEMINI_API_KEY_BACKUP']);
 
-    if (!data?.value) {
-        throw new Error("Missing Gemini Key");
+    if (data) {
+        const primary = data.find(s => s.key_name === 'GEMINI_API_KEY')?.value;
+        const backup = data.find(s => s.key_name === 'GEMINI_API_KEY_BACKUP')?.value;
+        if (primary) keys.push(primary);
+        if (backup) keys.push(backup);
     }
-    return data.value;
+
+    if (keys.length === 0) {
+        throw new Error("Missing Gemini Keys");
+    }
+    return keys;
 }
 
 
@@ -137,6 +145,152 @@ const compressBlob = (blob: Blob): Promise<Blob> => {
         };
         reader.onerror = (err) => reject(err);
     });
+};
+
+// --- NEW FUNCTION: START MIGRATION ---
+export const startMigration = async (
+    notionSettings: { apiKey: string, databaseId: string },
+    supabaseSettings: SupabaseSettings,
+    filters: { startDate?: string, endDate?: string },
+    onProgress: (current: number, total: number, msg: string) => void,
+    onLog: (msg: string) => void,
+    accessToken?: string
+): Promise<void> => {
+    const log = (msg: string) => onLog(`[${new Date().toLocaleTimeString()}] ${msg}`);
+    log("🚀 Iniciando conexión con Notion...");
+
+    if (!notionSettings.apiKey || !notionSettings.databaseId) {
+        throw new Error("Faltan credenciales de Notion.");
+    }
+
+    // 1. Fetch Notion Data
+    let pages: any[] = [];
+    let cursor: string | undefined = undefined;
+    let hasMore = true;
+
+    // Build Notion Filter
+    const notionFilter: any = { and: [] };
+    if (filters.startDate) {
+        notionFilter.and.push({ property: "Fecha", date: { on_or_after: filters.startDate } });
+    }
+    if (filters.endDate) {
+        notionFilter.and.push({ property: "Fecha", date: { on_or_before: filters.endDate } });
+    }
+    const filterPayload = notionFilter.and.length > 0 ? notionFilter : undefined;
+
+    while (hasMore) {
+        const url = `https://api.notion.com/v1/databases/${notionSettings.databaseId}/query`;
+        try {
+            const response = await fetchWithFallback(url, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${notionSettings.apiKey}`,
+                    'Notion-Version': '2022-06-28',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    page_size: 100,
+                    start_cursor: cursor,
+                    filter: filterPayload
+                })
+            });
+
+            if (!response.ok) {
+                let errMsg = response.statusText;
+                try {
+                    const errBody = await response.json();
+                    errMsg = errBody.message || errMsg;
+                } catch(e) {}
+                throw new Error(`Error Notion (${response.status}): ${errMsg}`);
+            }
+
+            const data = await response.json();
+            pages = [...pages, ...data.results];
+            cursor = data.next_cursor || undefined; 
+            hasMore = data.has_more;
+            
+            onProgress(pages.length, 0, `Recuperando de Notion: ${pages.length} encontrados...`);
+        } catch (e: any) {
+            throw new Error(`Fallo al conectar con Notion: ${e.message}`);
+        }
+    }
+
+    if (pages.length === 0) {
+        log("⚠️ No se encontraron entradas en Notion para migrar.");
+        return;
+    }
+
+    log(`📦 Se procesarán ${pages.length} entradas.`);
+
+    // 2. Setup Supabase Client
+    const client = createClient(supabaseSettings.supabaseUrl, supabaseSettings.supabaseKey, {
+        auth: {
+            persistSession: false,
+            autoRefreshToken: false,
+            detectSessionInUrl: false
+        },
+        global: { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined }
+    });
+
+    // 3. Process Pages
+    let migrated = 0;
+    let errors = 0;
+    const total = pages.length;
+
+    for (let i = 0; i < total; i++) {
+        const page = pages[i];
+        const props = page.properties;
+        
+        try {
+            // Map Properties
+            const title = props["Título"]?.title?.[0]?.plain_text || "Evento sin título";
+            const date = props["Fecha"]?.date?.start || null;
+            
+            let time = props["Hora"]?.rich_text?.[0]?.plain_text || "00:00";
+            if (!time.includes(':')) time = "00:00";
+            if (time.length === 4) time = "0" + time; 
+
+            const recordType = props["Tipo de registro"]?.select?.name || "Resumen";
+            const healthStatus = props["Estado de Salud"]?.select?.name || null;
+            const description = props["Descripción"]?.rich_text?.[0]?.plain_text || "";
+            const weight = props["Peso"]?.number || null;
+
+            if (!date) {
+                continue;
+            }
+
+            const payload: any = {
+                id: page.id, // IDempotency using Notion UUID
+                title: title,
+                record_type: recordType,
+                date: date,
+                time: time,
+                health_status: healthStatus,
+                description: description,
+                weight: weight
+            };
+
+            const { error } = await client.from('events').upsert(payload);
+
+            if (error) {
+                log(`❌ Error insertando "${title}": ${error.message}`);
+                errors++;
+            } else {
+                migrated++;
+            }
+            
+            if (i % 5 === 0) onProgress(i + 1, total, `Migrando: ${title}`);
+
+        } catch (e: any) {
+            log(`❌ Excepción en "${pages[i].id}": ${e.message}`);
+            errors++;
+        }
+    }
+
+    log(`🏁 MIGRACIÓN COMPLETADA. Importados: ${migrated}, Errores: ${errors}.`);
+    if (migrated > 0) {
+        log("💡 RECOMENDACIÓN: Ejecuta 'Asignar Huérfanos' para vincular estos eventos a tu usuario/mascota.");
+    }
 };
 
 // --- NEW MASS DELETE FUNCTION ---
@@ -417,7 +571,7 @@ function cleanJsonString(str: string): string {
     return cleaned;
 }
 
-// --- NEW FUNCTION: BATCH SCORE POOPS ---
+// --- NEW FUNCTION: BATCH SCORE POOPS (MULTI-KEY) ---
 export const batchScorePoops = async (
     settings: SupabaseSettings,
     onProgress: (current: number, total: number, msg: string) => void,
@@ -427,8 +581,7 @@ export const batchScorePoops = async (
     const log = (msg: string) => onLog(`[${new Date().toLocaleTimeString()}] ${msg}`);
 
     try {
-        const apiKey = await getGeminiApiKeyInternal(settings, accessToken);
-        const ai = new GoogleGenAI({ apiKey });
+        const apiKeys = await getGeminiApiKeysInternal(settings, accessToken);
 
         // Create client
         const client = createClient(settings.supabaseUrl, settings.supabaseKey, {
@@ -454,10 +607,11 @@ export const batchScorePoops = async (
         }
 
         const total = events.length;
-        log(`📋 Lote encontrado: ${total} registros. Usando Gemini 2.0 Flash...`);
+        log(`📋 Lote encontrado: ${total} registros.`);
 
         let updatedCount = 0;
         let failureCount = 0;
+        let currentKeyIndex = 0; // Simple rotation index
 
         for (let i = 0; i < total; i++) {
             const ev = events[i];
@@ -471,7 +625,6 @@ export const batchScorePoops = async (
 
                 const parts: any[] = [{ text: prompt }];
 
-                // Try to add image if exists
                 if (ev.photo_url) {
                     try {
                         const imgBase64 = await urlToBase64(ev.photo_url);
@@ -484,18 +637,20 @@ export const batchScorePoops = async (
                             });
                         }
                     } catch (imgErr) {
-                        // Fail gracefully on image, continue with text
                         log(`⚠️ Imagen falló en ${ev.title}, usando solo texto.`);
                     }
                 }
 
-                // Call Gemini with RETRIES
+                // --- GENERATION WITH MANUAL ROTATION FOR BATCH ---
                 let resultText = "";
                 let success = false;
                 
-                for (let attempt = 0; attempt < 3; attempt++) {
+                // Try up to 2 keys if needed
+                for (let k = 0; k < apiKeys.length; k++) {
+                    const activeKey = apiKeys[(currentKeyIndex + k) % apiKeys.length];
+                    const ai = new GoogleGenAI({ apiKey: activeKey });
+                    
                     try {
-                        // CHANGED: Use gemini-2.0-flash for stability/limits
                         const response = await ai.models.generateContent({
                             model: 'gemini-2.0-flash',
                             contents: { parts },
@@ -512,16 +667,18 @@ export const batchScorePoops = async (
                         resultText = response.text || "";
                         if (resultText) {
                             success = true;
+                            // Keep using this key index if successful
+                            currentKeyIndex = (currentKeyIndex + k) % apiKeys.length;
                             break;
                         }
                     } catch (err: any) {
-                        const isRateLimit = err.message?.includes('429') || err.status === 429;
-                        if (attempt < 2) {
-                            // Backoff: 2s, 4s
-                            const delay = (attempt + 1) * 2000;
-                            if (isRateLimit) log(`⏳ Rate limit. Esperando ${delay}ms...`);
-                            await new Promise(r => setTimeout(r, delay));
+                        const msg = err.message || "";
+                        if (msg.includes('429') || msg.includes('quota')) {
+                            log(`⚠️ Cuota excedida en clave ${activeKey.slice(-4)}. Rotando...`);
+                            continue; // Try next key
                         }
+                        // Other error, probably file issue, break to skip event
+                        break;
                     }
                 }
 
@@ -534,7 +691,6 @@ export const batchScorePoops = async (
                 const result = JSON.parse(cleanedText);
                 
                 if (result.score) {
-                    // Update DB
                     const { error: updateError } = await client
                         .from('events')
                         .update({ poop_score: result.score })
@@ -550,8 +706,8 @@ export const batchScorePoops = async (
                     failureCount++;
                 }
 
-                // CHANGED: Increased delay to 5 seconds to be safe with rate limits
-                await new Promise(r => setTimeout(r, 5000)); 
+                // Sleep to respect rate limits
+                await new Promise(r => setTimeout(r, 2000)); 
 
             } catch (e: any) {
                 log(`❌ Error procesando ${ev.title}: ${e.message}`);
@@ -563,177 +719,5 @@ export const batchScorePoops = async (
 
     } catch (e: any) {
         log(`❌ Error General: ${e.message}`);
-    }
-};
-
-
-// --- MIGRATION FUNCTION ---
-export const startMigration = async (
-    notionSettings: { apiKey: string, databaseId: string },
-    supabaseSettings: SupabaseSettings,
-    filters: { startDate?: string, endDate?: string },
-    onProgress: (current: number, total: number, status: string) => void,
-    onLog: (msg: string) => void,
-    accessToken?: string
-): Promise<{ success: boolean }> => {
-    
-    const log = (msg: string) => {
-        const timeMsg = `[${new Date().toLocaleTimeString()}] ${msg}`;
-        console.log(timeMsg);
-        onLog(timeMsg);
-    };
-
-    const apiKey = notionSettings.apiKey.trim();
-    const dbId = notionSettings.databaseId.trim();
-
-    try {
-        log("⚙️ Preparando consulta a Notion...");
-        
-        let allResults: any[] = [];
-        let hasMore = true;
-        let cursor: string | undefined = undefined;
-
-        // Construct Notion Filter Object
-        const notionFilters: any[] = [];
-        if (filters.startDate) {
-            notionFilters.push({ property: "Fecha", date: { on_or_after: filters.startDate } });
-        }
-        if (filters.endDate) {
-            notionFilters.push({ property: "Fecha", date: { on_or_before: filters.endDate } });
-        }
-
-        const filterPayload = notionFilters.length > 0 
-            ? (notionFilters.length === 1 ? notionFilters[0] : { and: notionFilters }) 
-            : undefined;
-
-        if (filterPayload) {
-            log(`🔎 Aplicando filtro Notion: ${JSON.stringify(filterPayload)}`);
-        }
-
-        // 1. Fetch Loop
-        while (hasMore) {
-            const url = `https://api.notion.com/v1/databases/${dbId}/query`;
-            const body: any = { 
-                page_size: 50,
-                filter: filterPayload
-            };
-            if (cursor) body.start_cursor = cursor;
-
-            const response = await fetchWithFallback(url, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${apiKey}`,
-                    'Notion-Version': '2022-06-28',
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(body)
-            });
-
-            if (!response.ok) {
-                const errText = await response.text();
-                throw new Error(`Error Notion (${response.status}): ${errText}`);
-            }
-            
-            const data = await response.json();
-            allResults = [...allResults, ...data.results];
-            hasMore = data.has_more;
-            cursor = data.next_cursor;
-            
-            onProgress(allResults.length, -1, `Descargando: ${allResults.length} encontrados...`);
-        }
-
-        const total = allResults.length;
-        log(`📋 TOTAL A PROCESAR: ${total} registros.`);
-
-        if (total === 0) {
-            log("⚠️ No se encontraron registros con esos filtros.");
-            return { success: true };
-        }
-
-        // 2. Process
-        for (let i = 0; i < total; i++) {
-            const page = allResults[i];
-            const props = page.properties;
-
-            // Title
-            const titleList = props['Título']?.title || [];
-            let title = titleList.length > 0 ? titleList[0].plain_text : "Sin título";
-            
-            onProgress(i + 1, total, `Migrando ${i + 1}/${total}: ${title}`);
-
-            // Type
-            let recordTypeStr = props['Tipo de registro']?.select?.name || "Resumen";
-            let recordType = Object.values(RecordType).find(r => r === recordTypeStr) || RecordType.SUMMARY;
-
-            // --- STRICT DATE/TIME PARSING (Fixing Timezone Issues) ---
-            
-            // 1. Date: Notion returns "YYYY-MM-DD" in date.start
-            let dateStr = props['Fecha']?.date?.start || "";
-            
-            // 2. Time: Search in 'Hora' Text Column
-            let timeStr = "";
-            const horaRichText = props['Hora']?.rich_text;
-            if (horaRichText && horaRichText.length > 0) {
-                // Assuming format "HH:mm" in text
-                timeStr = horaRichText[0].plain_text.trim();
-            }
-
-            // Fallbacks
-            if (!dateStr) dateStr = new Date().toISOString().split('T')[0]; // Only if missing
-            if (!timeStr) timeStr = "12:00"; // Default noon if missing
-
-            // Description
-            const descList = props['Descripción']?.rich_text || [];
-            let description = descList.map((t: any) => t.plain_text).join("");
-
-            // Health
-            const statusStr = props['Estado de Salud']?.select?.name;
-            let healthStatus = Object.values(HealthStatus).find(s => s === statusStr) || null;
-
-            // Weight
-            const weight = props['Peso']?.number || undefined;
-
-            // Photo
-            let photoBase64: string | undefined = undefined;
-            const files = props['Foto']?.files || props['Archivos']?.files || [];
-            
-            if (files.length > 0) {
-                const fileUrl = files[0].file?.url || files[0].external?.url;
-                if (fileUrl) {
-                    log(`   📸 Descargando foto...`);
-                    photoBase64 = await urlToBase64(fileUrl);
-                }
-            }
-
-            // --- NO AI ---
-
-            const newEvent: DogEvent = {
-                id: generateUUID(), 
-                title,
-                recordType: recordType as RecordType,
-                date: dateStr,
-                time: timeStr,
-                description,
-                healthStatus: healthStatus as HealthStatus,
-                weight,
-                photoBase64,
-                synced: false
-            };
-
-            // Pass accessToken to ensure ownership is correctly assigned (if implicit in backend trigger) 
-            // and RLS allows insert.
-            const saveResult = await saveEventToSupabase(newEvent, supabaseSettings, accessToken);
-            
-            if (!saveResult.success) {
-                log(`   ❌ Error guardando: ${saveResult.error}`);
-            }
-        }
-
-        log("✅ Migración completada exitosamente.");
-        return { success: true };
-
-    } catch (error: any) {
-        log(`❌ Error CRÍTICO Migración: ${error.message}`);
-        return { success: false };
     }
 };

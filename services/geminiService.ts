@@ -6,7 +6,6 @@ import { searchEvents } from "./supabaseService";
 
 // --- CONFIGURATION ---
 // Priority list: Latest & Fastest -> Stable Backup
-// Removed gemini-1.5-flash as it is causing 404 errors in v1beta
 const FALLBACK_MODELS = ['gemini-2.0-flash', 'gemini-2.0-flash-lite-preview-02-05'];
 
 const SYSTEM_INSTRUCTION = `
@@ -60,18 +59,23 @@ REGLAS:
 5. Mantén el contexto de la conversación. Si el usuario dice "¿Y de vómitos?", se refiere al mismo periodo de tiempo del que hablabais antes.
 `;
 
-// --- HELPER: Get API Key Securely ---
-async function getGeminiApiKey(settings: SupabaseSettings, accessToken?: string): Promise<string> {
-    // 1. Try Production Env Var (Vercel)
+// --- HELPER: Get API Keys Securely (Multi-Key Support) ---
+async function getGeminiApiKeys(settings: SupabaseSettings, accessToken?: string): Promise<string[]> {
+    const keys: string[] = [];
+
+    // 1. Try Production Env Vars (Vercel)
     try {
         // @ts-ignore
-        const envKey = import.meta.env.VITE_GEMINI_API_KEY;
-        if (envKey && envKey.length > 10) return envKey;
+        if (import.meta.env.VITE_GEMINI_API_KEY) keys.push(import.meta.env.VITE_GEMINI_API_KEY);
+        // @ts-ignore
+        if (import.meta.env.VITE_GEMINI_API_KEY_BACKUP) keys.push(import.meta.env.VITE_GEMINI_API_KEY_BACKUP);
     } catch (e) {
         // Ignore error if env not available
     }
 
-    // 2. Fallback: Fetch from Supabase DB (Development / Local)
+    if (keys.length > 0) return keys;
+
+    // 2. Fallback: Fetch from Supabase DB
     if (!settings.supabaseUrl || !settings.supabaseKey) {
         throw new Error("No hay configuración de Supabase para recuperar la clave API.");
     }
@@ -84,67 +88,89 @@ async function getGeminiApiKey(settings: SupabaseSettings, accessToken?: string)
 
     const { data, error } = await client
         .from('app_secrets')
-        .select('value')
-        .eq('key_name', 'GEMINI_API_KEY')
-        .single();
+        .select('key_name, value')
+        .in('key_name', ['GEMINI_API_KEY', 'GEMINI_API_KEY_BACKUP']);
 
-    if (error || !data?.value) {
+    if (error || !data) {
         console.error("Error fetching API Key:", error);
-        throw new Error("No se encontró la API KEY de Gemini. Configura 'VITE_GEMINI_API_KEY' en Vercel o añade 'GEMINI_API_KEY' en la tabla 'app_secrets'.");
+        throw new Error("No se encontraron claves API de Gemini.");
     }
 
-    return data.value;
+    const primary = data.find(s => s.key_name === 'GEMINI_API_KEY')?.value;
+    const backup = data.find(s => s.key_name === 'GEMINI_API_KEY_BACKUP')?.value;
+
+    if (primary) keys.push(primary);
+    if (backup) keys.push(backup);
+
+    if (keys.length === 0) {
+        throw new Error("No hay API KEYs configuradas en 'app_secrets'.");
+    }
+
+    return keys;
 }
 
-// --- HELPER: Robust Generation with Fallback & Retry ---
+// --- HELPER: Robust Generation with Key Rotation & Fallback ---
 async function generateWithFallback(
-    apiKey: string,
+    apiKeys: string[],
     contents: any,
     baseConfig: any
 ): Promise<any> {
-    const ai = new GoogleGenAI({ apiKey });
     let lastError: any;
 
-    for (const model of FALLBACK_MODELS) {
-        // Retry loop for transient errors (503, 429) within the same model
-        for (let attempt = 0; attempt < 2; attempt++) {
-            try {
-                // console.log(`Attempting with model: ${model} (Try ${attempt + 1})`);
-                const response = await ai.models.generateContent({
-                    model: model,
-                    contents: contents,
-                    config: baseConfig
-                });
-                return response;
-            } catch (error: any) {
-                lastError = error;
-                
-                // Check for fatal errors (400 Bad Request, 401 Unauthorized, 404 Not Found)
-                // These won't be fixed by retrying or switching models.
-                const status = error.status || error.response?.status;
-                if (status === 400 || status === 401 || status === 403 || status === 404) {
-                    // Log but don't throw immediately if we have other models to try
-                    // console.warn(`Model ${model} failed with ${status}`, error);
-                    break; // Break attempt loop, try next model
-                }
+    // Outer Loop: Rotate through API Keys
+    for (const apiKey of apiKeys) {
+        // console.log(`Using API Key: ...${apiKey.slice(-4)}`);
+        const ai = new GoogleGenAI({ apiKey });
 
-                // If 503 (Service Unavailable) or 429 (Too Many Requests), wait and retry
-                const isTransient = status === 503 || status === 429 || error.message?.includes('Overloaded');
-                
-                if (isTransient) {
-                    // Exponential backoff: 1s, 2s...
-                    const delay = Math.pow(2, attempt) * 1000;
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    continue; // Try next attempt loop
-                }
+        // Inner Loop: Rotate through Models
+        for (const model of FALLBACK_MODELS) {
+            // Retry loop for transient errors (503) within the same model/key combo
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    const response = await ai.models.generateContent({
+                        model: model,
+                        contents: contents,
+                        config: baseConfig
+                    });
+                    return response;
+                } catch (error: any) {
+                    lastError = error;
+                    const status = error.status || error.response?.status;
+                    const msg = error.message || "";
 
-                // If unknown error, break attempt loop and try next model
-                break; 
+                    // CRITICAL: If Quota Exceeded (429), break model loop to switch KEY immediately
+                    if (status === 429 || msg.includes('429') || msg.includes('quota')) {
+                        console.warn(`⚠️ Cuota excedida en clave ...${apiKey.slice(-4)}. Cambiando de cuenta...`);
+                        break; // Breaks Attempt Loop
+                    }
+
+                    // Fatal errors (400, 401, 403, 404) -> Break attempt loop, try next model (if 404) or crash
+                    if (status === 400 || status === 401 || status === 403 || status === 404) {
+                        break; 
+                    }
+
+                    // Transient (503) -> Wait and Retry
+                    const isTransient = status === 503 || msg.includes('Overloaded');
+                    if (isTransient) {
+                        const delay = Math.pow(2, attempt) * 1000;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue; 
+                    }
+
+                    break; // Unknown error, try next model
+                }
+            }
+            
+            // If we broke here due to 429, we need to exit the Model loop too to get to the Key loop
+            const status = lastError?.status || lastError?.response?.status;
+            const msg = lastError?.message || "";
+            if (status === 429 || msg.includes('429') || msg.includes('quota')) {
+                break; // Continue to next Key
             }
         }
     }
 
-    throw lastError || new Error("Todos los modelos de IA están saturados o fallaron.");
+    throw lastError || new Error("Todas las cuentas y modelos de IA fallaron.");
 }
 
 
@@ -155,7 +181,7 @@ export const analyzeInput = async (
   accessToken?: string
 ): Promise<AIAnalysisResult> => {
   
-  const apiKey = await getGeminiApiKey(settings, accessToken);
+  const apiKeys = await getGeminiApiKeys(settings, accessToken);
   
   const now = new Date();
   const contextPrompt = `Momento actual del sistema: ${now.toLocaleString('es-ES')}. Analiza esto: "${textInput}"`;
@@ -200,7 +226,7 @@ export const analyzeInput = async (
       }
   };
 
-  const response = await generateWithFallback(apiKey, { parts }, config);
+  const response = await generateWithFallback(apiKeys, { parts }, config);
 
   if (!response.text) {
       throw new Error("No analysis generated");
@@ -214,7 +240,7 @@ export const analyzeImage = async (
     settings: SupabaseSettings,
     accessToken?: string
 ): Promise<AIAnalysisResult> => {
-    const apiKey = await getGeminiApiKey(settings, accessToken);
+    const apiKeys = await getGeminiApiKeys(settings, accessToken);
     
     const cleanBase64 = imageBase64.split(',')[1] || imageBase64;
     const now = new Date();
@@ -259,7 +285,7 @@ export const analyzeImage = async (
         }
     };
 
-    const response = await generateWithFallback(apiKey, contents, config);
+    const response = await generateWithFallback(apiKeys, contents, config);
 
     if (!response.text) {
         throw new Error("No analysis generated from image");
@@ -273,7 +299,7 @@ export const analyzeAudio = async (
     settings: SupabaseSettings,
     accessToken?: string
 ): Promise<AIAnalysisResult> => {
-    const apiKey = await getGeminiApiKey(settings, accessToken);
+    const apiKeys = await getGeminiApiKeys(settings, accessToken);
     const now = new Date();
 
     const contents = {
@@ -316,7 +342,7 @@ export const analyzeAudio = async (
         }
     };
 
-    const response = await generateWithFallback(apiKey, contents, config);
+    const response = await generateWithFallback(apiKeys, contents, config);
 
     if (!response.text) {
         throw new Error("No analysis generated from audio");
@@ -331,7 +357,7 @@ export const analyzeFile = async (
     settings: SupabaseSettings,
     accessToken?: string
 ): Promise<AIAnalysisResult> => {
-    const apiKey = await getGeminiApiKey(settings, accessToken);
+    const apiKeys = await getGeminiApiKeys(settings, accessToken);
     const cleanBase64 = base64Data.split(',')[1] || base64Data;
     const now = new Date();
 
@@ -375,7 +401,7 @@ export const analyzeFile = async (
         }
     };
 
-    const response = await generateWithFallback(apiKey, contents, config);
+    const response = await generateWithFallback(apiKeys, contents, config);
 
     if (!response.text) {
         throw new Error("No analysis generated from file");
@@ -384,7 +410,7 @@ export const analyzeFile = async (
     return JSON.parse(response.text) as AIAnalysisResult;
 }
 
-// --- NEW: Consultant Logic with Tool Use ---
+// --- CONSULTANT LOGIC (UPDATED FOR MULTI-KEY) ---
 
 const queryEventsTool: FunctionDeclaration = {
     name: 'query_events',
@@ -420,7 +446,7 @@ export const consultAssistant = async (
     accessToken?: string 
 ): Promise<{ text: string, events?: DogEvent[] }> => {
     
-    const apiKey = await getGeminiApiKey(settings, accessToken);
+    const apiKeys = await getGeminiApiKeys(settings, accessToken);
     const today = new Date().toISOString().split('T')[0];
 
     // Build contents from history
@@ -441,8 +467,8 @@ export const consultAssistant = async (
         tools: [{ functionDeclarations: [queryEventsTool] }]
     };
 
-    // 1. Initial Call (Uses Fallback)
-    let response = await generateWithFallback(apiKey, contents, config);
+    // 1. Initial Call (Uses Fallback Keys)
+    let response = await generateWithFallback(apiKeys, contents, config);
 
     let foundEvents: DogEvent[] = [];
     let functionCalls = response.functionCalls;
@@ -491,10 +517,8 @@ export const consultAssistant = async (
                 { role: 'user', parts: functionResponseParts }
             ];
 
-            // 2. Second Call (Tool Result - Uses Fallback)
-            // Note: We pass the config again but without tool definition technically needed, 
-            // but keeping it maintains context instructions.
-            response = await generateWithFallback(apiKey, newContents, {
+            // 2. Second Call (Tool Result - Uses Fallback Keys)
+            response = await generateWithFallback(apiKeys, newContents, {
                 systemInstruction: CONSULTANT_INSTRUCTION
             });
         }
@@ -506,7 +530,7 @@ export const consultAssistant = async (
     };
 };
 
-// --- NEW: TASK DETECTION ---
+// --- TASK DETECTION (UPDATED FOR MULTI-KEY) ---
 export const detectTaskFromNote = async (
     message: string, 
     mentionedUsers: {id: string, name: string}[],
@@ -515,7 +539,7 @@ export const detectTaskFromNote = async (
 ): Promise<{ title: string, assignedToId: string } | null> => {
     if (mentionedUsers.length === 0) return null;
 
-    const apiKey = await getGeminiApiKey(settings, accessToken);
+    const apiKeys = await getGeminiApiKeys(settings, accessToken);
     const usersContext = mentionedUsers.map(u => `${u.name} (ID: ${u.id})`).join(", ");
 
     const prompt = `
@@ -547,7 +571,7 @@ export const detectTaskFromNote = async (
     };
 
     try {
-        const response = await generateWithFallback(apiKey, { parts: [{ text: prompt }] }, config);
+        const response = await generateWithFallback(apiKeys, { parts: [{ text: prompt }] }, config);
         if (!response.text) return null;
         const result = JSON.parse(response.text);
         if (!result || !result.title || !result.assignedToId) return null;
