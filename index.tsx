@@ -1,6 +1,8 @@
 // El polyfill DEBE ir antes de cualquier importación para evitar ReferenceError: process is not defined
 if (typeof window !== 'undefined') {
-  (window as any).process = (window as any).process || { env: {} };
+  const win = window as any;
+  win.process = win.process || {};
+  win.process.env = win.process.env || {};
 }
 
 import React from 'react';

@@ -25,9 +25,8 @@ const CONSULTANT_INSTRUCTION = `
 Eres un asistente veterinario inteligente. Responde dudas sobre el historial del perro basándote en los eventos proporcionados.
 `;
 
-// Inicialización siguiendo las guías: debe usar process.env.API_KEY directamente
-// Se asume que el polyfill en index.tsx ya ha inicializado process.env
-const getAIClient = () => new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+// Función para obtener el cliente actualizado justo antes de la llamada (Regla Mandatoria)
+const getAIClient = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export const analyzeInput = async (
   textInput: string,
@@ -37,18 +36,17 @@ export const analyzeInput = async (
 ): Promise<AIAnalysisResult> => {
   const ai = getAIClient();
   const now = new Date();
-  const contents = {
-    parts: [
-      { text: `CONTEXTO SISTEMA - Fecha Actual: ${now.toLocaleString('es-ES')}. INSTRUCCIÓN: ${textInput}` },
-      ...imageParts.map(data => ({
-        inlineData: { mimeType: 'image/jpeg', data: data.split(',')[1] || data }
-      }))
-    ]
-  };
-
+  
   const response = await ai.models.generateContent({
     model: MODEL_NAME,
-    contents: [contents],
+    contents: [{
+      parts: [
+        { text: `CONTEXTO SISTEMA - Fecha Actual: ${now.toLocaleString('es-ES')}. INSTRUCCIÓN: ${textInput}` },
+        ...imageParts.map(data => ({
+          inlineData: { mimeType: 'image/jpeg', data: data.split(',')[1] || data }
+        }))
+      ]
+    }],
     config: {
       systemInstruction: SYSTEM_INSTRUCTION,
       responseMimeType: "application/json",

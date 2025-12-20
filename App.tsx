@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { DogEvent, SupabaseSettings, HealthStatus, AIAnalysisResult, RecordType, Pet, CollaboratorPermissions, NotionSettings } from './types';
@@ -23,6 +22,17 @@ const DEFAULT_OWNER_PERMISSIONS: CollaboratorPermissions = { can_create: true, c
 
 const FALLBACK_URL = "https://nvnmlausdsexvmcrnzxc.supabase.co";
 const FALLBACK_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im52bm1sYXVzZHNleHZtY3JuenhjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM2NTE5MjAsImV4cCI6MjA3OTIyNzkyMH0.i2ddyT9GvT70bkIHqSW_whf9UMqqkNnAWawC4k91W0c";
+
+// Helper para asegurar que hay una API Key seleccionada (Regla Mandatoria)
+const ensureApiKey = async () => {
+  const win = window as any;
+  if (win.aistudio && typeof win.aistudio.hasSelectedApiKey === 'function') {
+    const hasKey = await win.aistudio.hasSelectedApiKey();
+    if (!hasKey) {
+      await win.aistudio.openSelectKey();
+    }
+  }
+};
 
 const App: React.FC = () => {
   const [settings] = useState<SupabaseSettings>({ supabaseUrl: FALLBACK_URL, supabaseKey: FALLBACK_KEY });
@@ -124,6 +134,7 @@ const App: React.FC = () => {
 
   const handleAudioCaptured = async (base64Audio: string) => {
       setAiProcessing(true);
+      await ensureApiKey();
       try {
           const result = await analyzeAudio(base64Audio, settings, session?.access_token);
           setDraftEvent({
@@ -145,6 +156,7 @@ const App: React.FC = () => {
       if (!file) return;
       
       setAiProcessing(true);
+      await ensureApiKey();
       try {
           // Extraer fecha de los metadatos del archivo (Capture time hint)
           const fileDate = new Date(file.lastModified);
