@@ -26,7 +26,13 @@ Eres un asistente veterinario inteligente. Responde dudas sobre el historial del
 `;
 
 // Función para obtener el cliente actualizado justo antes de la llamada (Regla Mandatoria)
-const getAIClient = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
+const getAIClient = () => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey || apiKey.length < 5) {
+    throw new Error("No hay una API Key configurada. Por favor, revisa las variables de entorno o selecciona una llave.");
+  }
+  return new GoogleGenAI({ apiKey });
+};
 
 export const analyzeInput = async (
   textInput: string,

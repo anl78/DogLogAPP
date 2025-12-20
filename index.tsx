@@ -1,7 +1,8 @@
+
 // El polyfill DEBE ir antes de cualquier importación para evitar ReferenceError: process is not defined
 if (typeof window !== 'undefined') {
   const win = window as any;
-  win.process = win.process || {};
+  win.process = win.process || { env: {} };
   win.process.env = win.process.env || {};
 }
 

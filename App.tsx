@@ -23,8 +23,13 @@ const DEFAULT_OWNER_PERMISSIONS: CollaboratorPermissions = { can_create: true, c
 const FALLBACK_URL = "https://nvnmlausdsexvmcrnzxc.supabase.co";
 const FALLBACK_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im52bm1sYXVzZHNleHZtY3JuenhjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM2NTE5MjAsImV4cCI6MjA3OTIyNzkyMH0.i2ddyT9GvT70bkIHqSW_whf9UMqqkNnAWawC4k91W0c";
 
-// Helper para asegurar que hay una API Key seleccionada (Regla Mandatoria)
+// Helper para asegurar que hay una API Key disponible
 const ensureApiKey = async () => {
+  // Si process.env.API_KEY ya tiene valor (inyectado por Vercel), no hacemos nada
+  if (process.env.API_KEY && process.env.API_KEY.length > 5) {
+    return;
+  }
+
   const win = window as any;
   if (win.aistudio && typeof win.aistudio.hasSelectedApiKey === 'function') {
     const hasKey = await win.aistudio.hasSelectedApiKey();
