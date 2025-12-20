@@ -4,49 +4,6 @@ import { saveEventToSupabase } from './supabaseService';
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenAI, Type } from "@google/genai";
 
-// --- Multi-Key Helper for Migration Service ---
-async function getGeminiApiKeysInternal(settings: SupabaseSettings, accessToken?: string): Promise<string[]> {
-    let keys: string[] = [];
-
-    // 1. Try Env Vars
-    try {
-        // @ts-ignore
-        if (import.meta.env.VITE_GEMINI_API_KEY) keys.push(import.meta.env.VITE_GEMINI_API_KEY);
-        // @ts-ignore
-        if (import.meta.env.VITE_GEMINI_API_KEY_BACKUP) keys.push(import.meta.env.VITE_GEMINI_API_KEY_BACKUP);
-        
-        keys = keys.filter(k => k && k.length > 10);
-    } catch (e) {}
-
-    if (keys.length > 0) return keys;
-
-    // 2. Fetch from DB
-    const client = createClient(settings.supabaseUrl, settings.supabaseKey, {
-        global: { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined }
-    });
-
-    const { data } = await client
-        .from('app_secrets')
-        .select('key_name, value')
-        .in('key_name', ['GEMINI_API_KEY', 'GEMINI_API_KEY_BACKUP']);
-
-    if (data) {
-        const primary = data.find(s => s.key_name === 'GEMINI_API_KEY')?.value;
-        const backup = data.find(s => s.key_name === 'GEMINI_API_KEY_BACKUP')?.value;
-        if (primary) keys.push(primary);
-        if (backup) keys.push(backup);
-    }
-
-    // Remove duplicates
-    keys = [...new Set(keys)];
-
-    if (keys.length === 0) {
-        throw new Error("Missing Gemini Keys");
-    }
-    return keys;
-}
-
-
 // Proxy strategy same as notionService
 const PROXIES = [
   "https://corsproxy.io/?",
@@ -431,7 +388,7 @@ export const optimizeExistingPhotos = async (
 ): Promise<void> => {
     const log = (msg: string) => onLog(`[${new Date().toLocaleTimeString()}] ${msg}`);
     
-    // Authenticate Client to pass RLS (Use explicit config to avoid local storage conflicts)
+    // Authenticate Client to pass RLS
     const client = createClient(settings.supabaseUrl, settings.supabaseKey, {
         auth: {
             persistSession: false,
@@ -483,7 +440,6 @@ export const optimizeExistingPhotos = async (
 
             // 2. Check Size (Skip if < 150KB)
             if (sizeKB < 150) {
-                // log(`⏩ ${ev.title}: Pequeña (${Math.round(sizeKB)}KB). Saltando.`);
                 skippedCount++;
                 continue;
             }
@@ -494,18 +450,15 @@ export const optimizeExistingPhotos = async (
             const newSizeKB = compressedBlob.size / 1024;
 
             // 4. Upload (Overwrite)
-            // Extract filename from URL
-            // URL format: .../storage/v1/object/public/dog_photos/uuid/filename.jpg
             const urlObj = new URL(url);
-            const pathParts = urlObj.pathname.split('/dog_photos/'); // Split by bucket name
+            const pathParts = urlObj.pathname.split('/dog_photos/'); 
             if (pathParts.length < 2) {
                 log(`⚠️ No pude extraer ruta de: ${url}`);
                 errorCount++;
                 continue;
             }
-            const storagePath = decodeURIComponent(pathParts[1]); // e.g. "pet_id/timestamp.jpg"
+            const storagePath = decodeURIComponent(pathParts[1]); 
 
-            // Attempt 1: Standard Upsert
             const { error: uploadError } = await client.storage
                 .from('dog_photos')
                 .upload(storagePath, compressedBlob, {
@@ -514,34 +467,23 @@ export const optimizeExistingPhotos = async (
                 });
 
             if (uploadError) {
-                // Handle RLS Violation: Policy might allow Insert/Delete but not Update.
-                // Fallback: Delete original -> Upload new
                 const isRlsError = (uploadError as any).code === '42501' || uploadError.message.includes('row-level security');
                 
                 if (isRlsError) {
-                    log(`⚠️ Upsert bloqueado por RLS. Intentando reemplazo (Borrar -> Subir)...`);
+                    log(`⚠️ Upsert bloqueado por RLS. Intentando reemplazo...`);
                     
-                    const { error: removeError } = await client.storage.from('dog_photos').remove([storagePath]);
-                    if (removeError) {
-                        log(`❌ Falló borrado previo: ${removeError.message}`);
-                        errorCount++;
-                        continue;
-                    }
-
+                    await client.storage.from('dog_photos').remove([storagePath]);
                     const { error: retryError } = await client.storage
                         .from('dog_photos')
                         .upload(storagePath, compressedBlob, {
                             contentType: 'image/jpeg',
-                            upsert: false // Now it's a fresh insert
+                            upsert: false 
                         });
 
                     if (retryError) {
                         log(`❌ Falló la re-subida: ${retryError.message}`);
                         errorCount++;
-                        continue;
                     } else {
-                        const saving = Math.round(((sizeKB - newSizeKB) / sizeKB) * 100);
-                        log(`✅ Optimizado (vía Reemplazo): ${Math.round(newSizeKB)}KB (Ahorro: ${saving}%)`);
                         compressedCount++;
                     }
                 } else {
@@ -549,8 +491,6 @@ export const optimizeExistingPhotos = async (
                     errorCount++;
                 }
             } else {
-                const saving = Math.round(((sizeKB - newSizeKB) / sizeKB) * 100);
-                log(`✅ Optimizado: ${Math.round(newSizeKB)}KB (Ahorro: ${saving}%)`);
                 compressedCount++;
             }
 
@@ -567,7 +507,6 @@ export const optimizeExistingPhotos = async (
 function cleanJsonString(str: string): string {
     if (!str) return "{}";
     let cleaned = str.trim();
-    // Remove markdown code blocks if present
     if (cleaned.startsWith("```json")) {
         cleaned = cleaned.replace(/^```json\s*/, "").replace(/\s*```$/, "");
     } else if (cleaned.startsWith("```")) {
@@ -576,7 +515,7 @@ function cleanJsonString(str: string): string {
     return cleaned;
 }
 
-// --- NEW FUNCTION: BATCH SCORE POOPS (MULTI-KEY) ---
+// --- NEW FUNCTION: BATCH SCORE POOPS (FOLLOWING GUIDELINES) ---
 export const batchScorePoops = async (
     settings: SupabaseSettings,
     onProgress: (current: number, total: number, msg: string) => void,
@@ -586,14 +525,14 @@ export const batchScorePoops = async (
     const log = (msg: string) => onLog(`[${new Date().toLocaleTimeString()}] ${msg}`);
 
     try {
-        const apiKeys = await getGeminiApiKeysInternal(settings, accessToken);
+        // Initialize Gemini using process.env.API_KEY as mandated
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
         // Create client
         const client = createClient(settings.supabaseUrl, settings.supabaseKey, {
             global: { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined }
         });
 
-        // CHANGED: Limited to last 15 unscored items for micro-batch processing
         log("🔍 Buscando últimas 15 'Cacas' sin puntuación...");
 
         const { data: events, error } = await client
@@ -601,13 +540,13 @@ export const batchScorePoops = async (
             .select('id, title, description, photo_url, date')
             .eq('record_type', 'Caca')
             .is('poop_score', null)
-            .order('date', { ascending: false }) // Process newest first (chipping away at recent history)
+            .order('date', { ascending: false })
             .limit(15);
 
         if (error) throw new Error(error.message);
 
         if (!events || events.length === 0) {
-            log("✅ No hay más registros pendientes (o has completado el lote).");
+            log("✅ No hay más registros pendientes.");
             return;
         }
 
@@ -616,14 +555,12 @@ export const batchScorePoops = async (
 
         let updatedCount = 0;
         let failureCount = 0;
-        let currentKeyIndex = 0; // Simple rotation index
 
         for (let i = 0; i < total; i++) {
             const ev = events[i];
             onProgress(i + 1, total, `Puntuando (${i+1}/${total}): ${ev.title}`);
 
             try {
-                // Determine content for AI
                 const prompt = `Analiza este registro de heces de perro y asigna una puntuación del 1 al 10 (1=Diarrea grave, 10=Perfecta). 
                 Solo devuelve el JSON puro: {"score": number}.
                 Título: ${ev.title}. Descripción: ${ev.description || "N/A"}.`;
@@ -646,51 +583,27 @@ export const batchScorePoops = async (
                     }
                 }
 
-                // --- GENERATION WITH MANUAL ROTATION FOR BATCH ---
-                let resultText = "";
-                let success = false;
-                
-                // Try up to all keys if needed
-                for (let k = 0; k < apiKeys.length; k++) {
-                    const activeKey = apiKeys[(currentKeyIndex + k) % apiKeys.length];
-                    const ai = new GoogleGenAI({ apiKey: activeKey });
-                    
-                    try {
-                        const response = await ai.models.generateContent({
-                            model: 'gemini-2.0-flash',
-                            contents: { parts },
-                            config: {
-                                responseMimeType: 'application/json',
-                                responseSchema: {
-                                    type: Type.OBJECT,
-                                    properties: {
-                                        score: { type: Type.INTEGER }
-                                    }
-                                }
-                            }
-                        });
-                        resultText = response.text || "";
-                        if (resultText) {
-                            success = true;
-                            // Keep using this key index if successful to minimize rotation thrashing
-                            currentKeyIndex = (currentKeyIndex + k) % apiKeys.length;
-                            break;
+                // Call GenAI directly using ai.models.generateContent and preferred model
+                const response = await ai.models.generateContent({
+                    model: 'gemini-3-flash-preview',
+                    contents: { parts },
+                    config: {
+                        responseMimeType: 'application/json',
+                        responseSchema: {
+                            type: Type.OBJECT,
+                            properties: {
+                                score: { type: Type.INTEGER }
+                            },
+                            required: ["score"]
                         }
-                    } catch (err: any) {
-                        const msg = err.message || "";
-                        // Simple 429 check for string message
-                        if (msg.includes('429') || msg.includes('quota') || msg.includes('Quota')) {
-                            log(`⚠️ Cuota excedida en clave ${activeKey.slice(-4)}. Rotando...`);
-                            continue; // Try next key
-                        }
-                        // Other error, break to skip event
-                        break;
                     }
-                }
+                });
 
-                if (!success || !resultText) {
+                // Correct text property access
+                const resultText = response.text || "";
+                if (!resultText) {
                     failureCount++;
-                    continue; // Skip this event
+                    continue;
                 }
 
                 const cleanedText = cleanJsonString(resultText);
@@ -703,7 +616,6 @@ export const batchScorePoops = async (
                         .eq('id', ev.id);
                     
                     if (updateError) {
-                        log(`❌ Error guardando score para ${ev.title}: ${updateError.message}`);
                         failureCount++;
                     } else {
                         updatedCount++;
@@ -712,8 +624,8 @@ export const batchScorePoops = async (
                     failureCount++;
                 }
 
-                // Sleep to respect rate limits
-                await new Promise(r => setTimeout(r, 2000)); 
+                // Small delay to respect rate limits
+                await new Promise(r => setTimeout(r, 1000)); 
 
             } catch (e: any) {
                 log(`❌ Error procesando ${ev.title}: ${e.message}`);

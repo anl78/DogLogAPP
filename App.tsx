@@ -47,7 +47,6 @@ const App: React.FC = () => {
   const [aiProcessing, setAiProcessing] = useState(false);
   const [draftEvent, setDraftEvent] = useState<Partial<DogEvent> | undefined>(undefined);
   const [inputMethod, setInputMethod] = useState<'menu' | 'voice' | 'chat' | 'manual'>('menu');
-  const [chatInput, setChatInput] = useState('');
 
   // Delete Account States
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -82,14 +81,9 @@ const App: React.FC = () => {
     if (session && currentPet) fetchEvents(true);
   }, [filterConfig, currentPet, session]);
 
-  // Handle View Change Logic for Drafts
   useEffect(() => {
-    if (view === 'add' && !draftEvent) {
-        setInputMethod('menu');
-    }
-    if (view !== 'add') {
-        setDraftEvent(undefined);
-    }
+    if (view === 'add' && !draftEvent) setInputMethod('menu');
+    if (view !== 'add') setDraftEvent(undefined);
   }, [view]);
 
   const fetchEvents = async (reset: boolean = false) => {
@@ -121,9 +115,7 @@ const App: React.FC = () => {
           if (ctx) {
              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
              resolve(canvas.toDataURL('image/jpeg', 0.7));
-          } else {
-             resolve(event.target?.result as string);
-          }
+          } else resolve(event.target?.result as string);
         };
       };
       reader.onerror = reject;
@@ -145,11 +137,7 @@ const App: React.FC = () => {
               poopScore: result.poopScore
           });
           setInputMethod('manual');
-      } catch (error: any) {
-          alert("Error analizando audio: " + error.message);
-      } finally {
-          setAiProcessing(false);
-      }
+      } catch (error: any) { alert("Error analizando audio: " + error.message); } finally { setAiProcessing(false); }
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -158,8 +146,12 @@ const App: React.FC = () => {
       
       setAiProcessing(true);
       try {
+          // Extraer fecha de los metadatos del archivo (Capture time hint)
+          const fileDate = new Date(file.lastModified);
+          const metadataHint = `FECHA METADATOS ARCHIVO: ${fileDate.toLocaleString('es-ES')}. Si esta fecha parece la de captura de la foto, úsala prioritariamente.`;
+          
           const base64 = await resizeImageForAI(file);
-          const result = await analyzeImage(base64, settings, session?.access_token);
+          const result = await analyzeImage(base64, settings, metadataHint, session?.access_token);
           
           setDraftEvent({
               title: result.title,
@@ -167,17 +159,13 @@ const App: React.FC = () => {
               healthStatus: result.healthStatus,
               description: result.description,
               weight: result.weight,
-              date: result.date || new Date().toISOString().split('T')[0],
-              time: result.time || new Date().toLocaleTimeString('es-ES', {hour: '2-digit', minute:'2-digit'}),
-              poopScore: result.poopScore,
+              date: result.date || fileDate.toISOString().split('T')[0],
+              time: result.time || fileDate.toLocaleTimeString('es-ES', {hour: '2-digit', minute:'2-digit'}),
+              poopScore: result.recordType === RecordType.POOP ? result.poopScore : undefined,
               photoBase64: base64
           });
           setInputMethod('manual');
-      } catch (error: any) {
-          alert("Error analizando imagen: " + error.message);
-      } finally {
-          setAiProcessing(false);
-      }
+      } catch (error: any) { alert("Error analizando imagen: " + error.message); } finally { setAiProcessing(false); }
   };
 
   const handleLogout = async () => { const client = createClient(settings.supabaseUrl, settings.supabaseKey); await client.auth.signOut(); };
@@ -193,19 +181,13 @@ const App: React.FC = () => {
         setShowDeleteModal(true);
         return;
     }
-    
-    if (deleteStep === 'transfer' && !transferTarget && petCollabs.length > 0) {
-        alert("Selecciona un nuevo dueño o elimina la mascota primero.");
-        return;
-    }
-
+    if (deleteStep === 'transfer' && !transferTarget && petCollabs.length > 0) { alert("Selecciona un nuevo dueño."); return; }
     setIsLoading(true);
     try {
         if (deleteStep === 'transfer') await transferPetOwnership(settings, ownerPets[0].id, transferTarget, session.access_token);
         else if (deleteStep === 'final' && ownerPets.length > 0) await deletePetCompletely(settings, ownerPets[0].id, session.access_token);
-        
         const res = await deleteUserAccount(settings, session.access_token);
-        if (res.success) { window.location.reload(); } else { alert(res.error); }
+        if (res.success) window.location.reload(); else alert(res.error);
     } catch (e: any) { alert(e.message); } finally { setIsLoading(false); }
   };
 
@@ -213,21 +195,16 @@ const App: React.FC = () => {
     <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-6 animate-fade-in">
         <div className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl">
             <h3 className="text-xl font-bold text-slate-800 mb-4">Eliminar Cuenta</h3>
-            
             {deleteStep === 'transfer' ? (
                 <>
-                    <p className="text-sm text-slate-600 mb-6">Eres el dueño de <b>{pets[0]?.name}</b>. Antes de irte, debes traspasar la propiedad a otro miembro del equipo o la mascota se borrará.</p>
-                    <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Nuevo Dueño</label>
+                    <p className="text-sm text-slate-600 mb-6">Debes traspasar la propiedad de <b>{pets[0]?.name}</b>.</p>
                     <select value={transferTarget} onChange={e => setTransferTarget(e.target.value)} className="w-full p-3 rounded-xl border border-slate-200 mb-6">
                         <option value="">-- Seleccionar --</option>
                         {petCollabs.map(c => <option key={c.user_id} value={c.user_id}>{c.profiles?.full_name || c.profiles?.email}</option>)}
                     </select>
-                    <button onClick={() => setDeleteStep('final')} className="text-xs text-red-500 underline mb-4 block w-full text-center">Prefiero borrar la mascota y sus datos</button>
+                    <button onClick={() => setDeleteStep('final')} className="text-xs text-red-500 underline mb-4 block w-full text-center">Borrar mascota y datos</button>
                 </>
-            ) : (
-                <p className="text-sm text-slate-600 mb-6">Esta acción es irreversible. Se borrarán tus datos personales{pets.filter(p => p.owner_id === session.user.id).length > 0 ? " y toda la información de tu mascota" : ""}. ¿Estás totalmente seguro?</p>
-            )}
-
+            ) : <p className="text-sm text-slate-600 mb-6">Acción irreversible. ¿Seguro?</p>}
             <div className="flex gap-3">
                 <button onClick={() => setShowDeleteModal(false)} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-xl">Cancelar</button>
                 <button onClick={handleAccountDeletion} className="flex-1 py-3 bg-red-600 text-white font-bold rounded-xl shadow-lg shadow-red-200">Confirmar</button>
@@ -238,12 +215,9 @@ const App: React.FC = () => {
 
   return (
     <>
-      {authLoading ? (
-         <div className="h-full flex items-center justify-center bg-slate-50"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>
-      ) : !session ? (
-         <Auth settings={settings} onLoginSuccess={() => fetchEvents(true)} />
-      ) : (
-         <div className="h-full w-full relative bg-slate-50">
+      {authLoading ? <div className="h-full flex items-center justify-center bg-slate-50"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>
+      : !session ? <Auth settings={settings} onLoginSuccess={() => fetchEvents(true)} />
+      : <div className="h-full w-full relative bg-slate-50">
             {view === 'home' && (
                 <div className="flex flex-col h-full bg-slate-50">
                     <header className="bg-white px-6 py-4 border-b border-slate-100 sticky top-0 z-10 flex justify-between items-center">
@@ -254,11 +228,7 @@ const App: React.FC = () => {
                         {events.map(ev => {
                             const eventPhoto = ev.photoUrl || ev.photoBase64;
                             return (
-                                <div 
-                                    key={ev.id} 
-                                    onClick={() => { setDraftEvent(ev); setInputMethod('manual'); setView('add'); }} 
-                                    className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100 cursor-pointer active:scale-[0.98] transition-transform flex flex-row items-stretch min-h-[140px]"
-                                >
+                                <div key={ev.id} onClick={() => { setDraftEvent(ev); setInputMethod('manual'); setView('add'); }} className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100 cursor-pointer active:scale-[0.98] transition-transform flex flex-row items-stretch min-h-[140px]">
                                     <div className="p-4 flex-1 flex flex-col justify-between">
                                         <div>
                                             <div className="flex justify-between items-start mb-2">
@@ -274,44 +244,18 @@ const App: React.FC = () => {
                                         </div>
                                         <div className="flex items-center justify-between mt-auto">
                                             <div className="flex gap-2">
-                                                {ev.healthStatus && (
-                                                    <span className={`text-[10px] px-2 py-0.5 rounded-md border ${HEALTH_STATUS_COLORS[ev.healthStatus]}`}>
-                                                        {ev.healthStatus}
-                                                    </span>
-                                                )}
-                                                {ev.recordType === RecordType.POOP && ev.poopScore && (
-                                                    <span className={`text-[10px] px-2 py-0.5 rounded-md border font-bold ${getPoopScoreColor(ev.poopScore)}`}>
-                                                        Score: {ev.poopScore}
-                                                    </span>
-                                                )}
+                                                {ev.healthStatus && <span className={`text-[10px] px-2 py-0.5 rounded-md border ${HEALTH_STATUS_COLORS[ev.healthStatus]}`}>{ev.healthStatus}</span>}
+                                                {ev.recordType === RecordType.POOP && ev.poopScore && <span className={`text-[10px] px-2 py-0.5 rounded-md border font-bold ${getPoopScoreColor(ev.poopScore)}`}>Score: {ev.poopScore}</span>}
                                             </div>
                                             <span className="text-[10px] text-slate-400">{ev.date}</span>
                                         </div>
                                     </div>
-                                    {eventPhoto && (
-                                        <div className="w-28 shrink-0 overflow-hidden bg-slate-100">
-                                            <img src={eventPhoto} alt={ev.title} className="w-full h-full object-cover" />
-                                        </div>
-                                    )}
+                                    {eventPhoto && <div className="w-28 shrink-0 overflow-hidden bg-slate-100"><img src={eventPhoto} alt={ev.title} className="w-full h-full object-cover" /></div>}
                                 </div>
                             );
                         })}
-                        {events.length === 0 && !isSyncing && (
-                            <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-                                <Icons.Activity className="w-12 h-12 mb-4 opacity-20" />
-                                <p className="text-sm">No hay eventos registrados.</p>
-                                <button onClick={() => setView('add')} className="mt-4 text-blue-600 font-bold text-sm">Crear primer registro</button>
-                            </div>
-                        )}
-                        {hasMore && (
-                            <button 
-                                onClick={() => fetchEvents()} 
-                                disabled={isSyncing}
-                                className="w-full py-4 text-sm text-blue-600 font-bold"
-                            >
-                                {isSyncing ? 'Cargando...' : 'Cargar más eventos'}
-                            </button>
-                        )}
+                        {events.length === 0 && !isSyncing && <div className="flex flex-col items-center justify-center py-20 text-slate-400"><Icons.Activity className="w-12 h-12 mb-4 opacity-20" /><p className="text-sm">No hay eventos.</p></div>}
+                        {hasMore && <button onClick={() => fetchEvents()} disabled={isSyncing} className="w-full py-4 text-sm text-blue-600 font-bold">{isSyncing ? 'Cargando...' : 'Cargar más'}</button>}
                     </div>
                 </div>
             )}
@@ -328,93 +272,33 @@ const App: React.FC = () => {
                         </select>
                      </div>
                      {currentPet && session?.user && <TeamManager settings={settings} currentPet={currentPet} currentUserId={session.user.id} accessToken={session.access_token}/>}
-                     
-                     {currentPet?.owner_id === session?.user?.id && (
-                        <MigrationPanel supabaseSettings={settings} currentPet={currentPet} currentUser={session?.user} accessToken={session.access_token}/>
-                     )}
-
+                     {currentPet?.owner_id === session?.user?.id && <MigrationPanel supabaseSettings={settings} currentPet={currentPet} currentUser={session?.user} accessToken={session.access_token}/>}
                      <div className="mt-10 border-t pt-6">
                         <button onClick={handleLogout} className="w-full py-3 bg-slate-100 text-slate-600 rounded-xl font-bold mb-3">Cerrar Sesión</button>
-                        <div className="p-4 bg-red-50 rounded-2xl border border-red-100">
-                            <h4 className="text-sm font-bold text-red-800 mb-2">Zona de Peligro</h4>
-                            <p className="text-xs text-red-600 mb-4">Eliminar tu cuenta borrará todos tus datos personales. No se puede deshacer.</p>
-                            <button onClick={() => { setDeleteStep('initial'); setShowDeleteModal(true); }} className="w-full py-2 bg-red-600 text-white rounded-lg font-bold text-xs shadow-sm">Eliminar Cuenta Permanentemente</button>
-                        </div>
+                        <button onClick={() => { setDeleteStep('initial'); setShowDeleteModal(true); }} className="w-full py-2 bg-red-600 text-white rounded-lg font-bold text-xs">Eliminar Cuenta</button>
                      </div>
                  </div>
             )}
             {view === 'add' && (
                 <div className="flex-1 overflow-y-auto p-4 bg-slate-50 h-full relative">
-                    
-                    {/* MODE SELECTION MENU */}
                     {inputMethod === 'menu' && (
                         <div className="flex flex-col items-center justify-center h-full space-y-6 animate-fade-in-up">
                              <h2 className="text-2xl font-bold text-slate-800 mb-4">Nuevo Registro</h2>
-                             
-                             {/* Voice Button */}
-                             <button 
-                                onClick={() => setInputMethod('voice')}
-                                className="w-full py-6 bg-white border-2 border-blue-100 rounded-3xl shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all"
-                             >
-                                <div className="p-4 bg-blue-100 text-blue-600 rounded-full">
-                                    <Icons.Mic className="w-8 h-8" />
-                                </div>
-                                <span className="font-bold text-slate-700">Nota de Voz (IA)</span>
-                             </button>
-
-                             {/* Photo Button */}
-                             <label className="w-full py-6 bg-white border-2 border-purple-100 rounded-3xl shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all cursor-pointer">
-                                <div className="p-4 bg-purple-100 text-purple-600 rounded-full">
-                                    <Icons.Camera className="w-8 h-8" />
-                                </div>
-                                <span className="font-bold text-slate-700">Analizar Foto (IA)</span>
-                                <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
-                             </label>
-
-                             {/* Manual Button */}
-                             <button 
-                                onClick={() => setInputMethod('manual')}
-                                className="w-full py-6 bg-white border-2 border-slate-100 rounded-3xl shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all"
-                             >
-                                <div className="p-4 bg-slate-100 text-slate-600 rounded-full">
-                                    <Icons.CheckSquare className="w-8 h-8" />
-                                </div>
-                                <span className="font-bold text-slate-700">Manual</span>
-                             </button>
-
-                              {/* Cancel */}
+                             <button onClick={() => setInputMethod('voice')} className="w-full py-6 bg-white border-2 border-blue-100 rounded-3xl shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all"><div className="p-4 bg-blue-100 text-blue-600 rounded-full"><Icons.Mic className="w-8 h-8" /></div><span className="font-bold text-slate-700">Nota de Voz (IA)</span></button>
+                             <label className="w-full py-6 bg-white border-2 border-purple-100 rounded-3xl shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all cursor-pointer"><div className="p-4 bg-purple-100 text-purple-600 rounded-full"><Icons.Camera className="w-8 h-8" /></div><span className="font-bold text-slate-700">Analizar Foto (IA)</span><input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} /></label>
+                             <button onClick={() => setInputMethod('manual')} className="w-full py-6 bg-white border-2 border-slate-100 rounded-3xl shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all"><div className="p-4 bg-slate-100 text-slate-600 rounded-full"><Icons.CheckSquare className="w-8 h-8" /></div><span className="font-bold text-slate-700">Manual</span></button>
                              <button onClick={() => setView('home')} className="mt-8 text-slate-400 font-medium">Cancelar</button>
                         </div>
                     )}
-
-                    {/* VOICE MODE */}
-                    {inputMethod === 'voice' && (
-                        <div className="h-full flex flex-col items-center justify-center">
-                             <h3 className="text-xl font-bold text-slate-700 mb-8">Grabando...</h3>
-                             <AudioRecorder onAudioCaptured={handleAudioCaptured} isProcessing={aiProcessing} />
-                             <button onClick={() => setInputMethod('menu')} className="mt-12 text-slate-400">Cancelar</button>
-                        </div>
-                    )}
-
-                    {/* MANUAL MODE */}
-                    {inputMethod === 'manual' && (
-                        <EventForm initialData={draftEvent} onSubmit={handleEventSubmit} onCancel={()=>setView('home')} onDelete={draftEvent?.id?()=>handleDeleteEvent(draftEvent as DogEvent):undefined} canEdit={permissions.can_edit !== 'none'} canDelete={permissions.can_delete !== 'none'}/>
-                    )}
-                    
-                    {/* LOADING OVERLAY FOR AI */}
-                    {aiProcessing && (
-                         <div className="absolute inset-0 bg-white/80 z-50 flex flex-col items-center justify-center backdrop-blur-sm">
-                            <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
-                            <p className="font-bold text-slate-700">Analizando con IA...</p>
-                         </div>
-                    )}
+                    {inputMethod === 'voice' && <div className="h-full flex flex-col items-center justify-center"><h3 className="text-xl font-bold text-slate-700 mb-8">Grabando...</h3><AudioRecorder onAudioCaptured={handleAudioCaptured} isProcessing={aiProcessing} /><button onClick={() => setInputMethod('menu')} className="mt-12 text-slate-400">Cancelar</button></div>}
+                    {inputMethod === 'manual' && <EventForm initialData={draftEvent} onSubmit={handleEventSubmit} onCancel={()=>setView('home')} onDelete={draftEvent?.id?()=>handleDeleteEvent(draftEvent as DogEvent):undefined} canEdit={permissions.can_edit !== 'none'} canDelete={permissions.can_delete !== 'none'}/>}
+                    {aiProcessing && <div className="absolute inset-0 bg-white/80 z-50 flex flex-col items-center justify-center backdrop-blur-sm"><div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div><p className="font-bold text-slate-700">Analizando con IA...</p></div>}
                 </div>
             )}
             <Navbar currentView={view} setView={setView} hasUnread={hasUnreadMessages} />
             {fullScreenImage && <ImageViewer src={fullScreenImage} onClose={() => setFullScreenImage(null)} />}
             {showDeleteModal && renderDeleteModal()}
-         </div>
-      )}
+         </div>}
     </>
   );
 
