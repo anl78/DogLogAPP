@@ -1,12 +1,11 @@
+// El polyfill DEBE ir antes de cualquier importación para evitar ReferenceError: process is not defined
+if (typeof window !== 'undefined') {
+  (window as any).process = (window as any).process || { env: {} };
+}
+
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
-
-// Polyfill para process.env en el navegador para evitar errores de referencia con la API de Gemini
-// Added 'as any' cast to window to prevent TypeScript error about missing 'process' property
-if (typeof window !== 'undefined' && !(window as any).process) {
-  (window as any).process = { env: {} };
-}
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

@@ -26,8 +26,8 @@ Eres un asistente veterinario inteligente. Responde dudas sobre el historial del
 `;
 
 // Inicialización siguiendo las guías: debe usar process.env.API_KEY directamente
-// Always use process.env.API_KEY directly as per SDK requirements
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Se asume que el polyfill en index.tsx ya ha inicializado process.env
+const getAIClient = () => new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 
 export const analyzeInput = async (
   textInput: string,
@@ -35,6 +35,7 @@ export const analyzeInput = async (
   settings: SupabaseSettings,
   accessToken?: string
 ): Promise<AIAnalysisResult> => {
+  const ai = getAIClient();
   const now = new Date();
   const contents = {
     parts: [
@@ -78,6 +79,7 @@ export const analyzeImage = async (imageBase64: string, settings: SupabaseSettin
 };
 
 export const analyzeAudio = async (audioBase64: string, settings: SupabaseSettings, accessToken?: string): Promise<AIAnalysisResult> => {
+    const ai = getAIClient();
     const now = new Date();
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
@@ -99,6 +101,7 @@ export const analyzeAudio = async (audioBase64: string, settings: SupabaseSettin
 };
 
 export const analyzeFile = async (base64Data: string, mimeType: string, settings: SupabaseSettings, accessToken?: string): Promise<AIAnalysisResult> => {
+    const ai = getAIClient();
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
       contents: [
@@ -119,6 +122,7 @@ export const analyzeFile = async (base64Data: string, mimeType: string, settings
 };
 
 export const consultAssistant = async (history: ChatMessage[], settings: SupabaseSettings, petId: string, accessToken?: string): Promise<{ text: string, events?: DogEvent[] }> => {
+    const ai = getAIClient();
     const contents = history.map(msg => ({
         role: msg.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: msg.text }]
@@ -139,6 +143,7 @@ export const detectTaskFromNote = async (
   settings: SupabaseSettings,
   accessToken?: string
 ): Promise<{ title: string; assignedToId: string | null } | null> => {
+  const ai = getAIClient();
   const prompt = `Nota: "${text}". Usuarios: ${JSON.stringify(mentionedUsers)}. ¿Es tarea? Responde JSON {isTask, title, assignedToId}`;
 
   try {
