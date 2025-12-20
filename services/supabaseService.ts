@@ -76,7 +76,6 @@ export const createPet = async (settings: SupabaseSettings, name: string, ownerI
 export const deletePetCompletely = async (settings: SupabaseSettings, petId: string, accessToken?: string): Promise<boolean> => {
     const client = createFreshClient(settings, accessToken);
     if (!client) return false;
-    // Database cascade should handle deleting events, notes, etc.
     const { error } = await client.from('pets').delete().eq('id', petId);
     return !error;
 };
@@ -84,10 +83,8 @@ export const deletePetCompletely = async (settings: SupabaseSettings, petId: str
 export const transferPetOwnership = async (settings: SupabaseSettings, petId: string, newOwnerId: string, accessToken?: string): Promise<boolean> => {
     const client = createFreshClient(settings, accessToken);
     if (!client) return false;
-    // 1. Update pets table
     const { error: petError } = await client.from('pets').update({ owner_id: newOwnerId }).eq('id', petId);
     if (petError) return false;
-    // 2. Promote collaborator to owner role (this depends on your role logic)
     const { error: collError } = await client.from('pet_collaborators').update({ role: 'owner' }).match({ pet_id: petId, user_id: newOwnerId });
     return !collError;
 };
@@ -95,8 +92,6 @@ export const transferPetOwnership = async (settings: SupabaseSettings, petId: st
 export const deleteUserAccount = async (settings: SupabaseSettings, accessToken: string): Promise<{ success: boolean; error?: string }> => {
     const client = createFreshClient(settings, accessToken);
     if (!client) return { success: false, error: "Client error" };
-    // This calls a Postgres function that you must create in Supabase SQL editor:
-    // "select delete_user_account()" which handles auth.users deletion via SECURITY DEFINER
     const { error } = await client.rpc('delete_user_account');
     if (error) return { success: false, error: error.message };
     await client.auth.signOut();
@@ -113,11 +108,50 @@ export const getCollaborators = async (settings: SupabaseSettings, petId: string
 
 export const inviteCollaborator = async (settings: SupabaseSettings, petId: string, email: string, accessToken?: string): Promise<{ success: boolean; error?: string }> => {
     const client = createFreshClient(settings, accessToken);
-    if (!client) return { success: false, error: "Client error" };
-    const { data: userId, error: rpcError } = await client.rpc('lookup_user_by_email', { email_input: email });
-    if (rpcError || !userId) return { success: false, error: "Usuario no encontrado." };
-    const { error: insertError } = await client.from('pet_collaborators').insert({ pet_id: petId, user_id: userId, role: 'viewer', permissions: { can_create: true, can_edit: 'own', can_delete: 'own', visible_types: [] } });
-    if (insertError) return { success: false, error: insertError.message };
+    if (!client) return { success: false, error: "Error de cliente Supabase" };
+    
+    const normalizedEmail = email.trim().toLowerCase();
+    console.log(`[Invite] Buscando perfil para: ${normalizedEmail}`);
+
+    // Standard lookup in public 'profiles' table which should contain email
+    const { data: profile, error: profileError } = await client
+        .from('profiles')
+        .select('id')
+        .ilike('email', normalizedEmail)
+        .single();
+    
+    if (profileError) {
+        console.error("[Invite] Profile Lookup Error:", JSON.stringify(profileError));
+        if (profileError.code === 'PGRST116') {
+            return { success: false, error: "Usuario no encontrado. El usuario debe estar registrado y haber confirmado su email." };
+        }
+        return { success: false, error: `Error buscando usuario: ${profileError.message}` };
+    }
+    
+    if (!profile || !profile.id) {
+        return { success: false, error: "No se pudo identificar el ID del usuario." };
+    }
+
+    console.log(`[Invite] Usuario encontrado (ID: ${profile.id}). Vinculando a mascota...`);
+
+    const { error: insertError } = await client.from('pet_collaborators').insert({ 
+        pet_id: petId, 
+        user_id: profile.id, 
+        role: 'viewer', 
+        permissions: { 
+            can_create: true, 
+            can_edit: 'own', 
+            can_delete: 'own', 
+            visible_types: [] 
+        } 
+    });
+
+    if (insertError) {
+        console.error("[Invite] Insert Error:", JSON.stringify(insertError));
+        if (insertError.code === '23505') return { success: false, error: "Este usuario ya es parte del equipo de esta mascota." };
+        return { success: false, error: `No se pudo añadir al grupo: ${insertError.message}` };
+    }
+
     return { success: true };
 };
 

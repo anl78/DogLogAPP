@@ -6,7 +6,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 
 // --- Multi-Key Helper for Migration Service ---
 async function getGeminiApiKeysInternal(settings: SupabaseSettings, accessToken?: string): Promise<string[]> {
-    const keys: string[] = [];
+    let keys: string[] = [];
 
     // 1. Try Env Vars
     try {
@@ -14,6 +14,8 @@ async function getGeminiApiKeysInternal(settings: SupabaseSettings, accessToken?
         if (import.meta.env.VITE_GEMINI_API_KEY) keys.push(import.meta.env.VITE_GEMINI_API_KEY);
         // @ts-ignore
         if (import.meta.env.VITE_GEMINI_API_KEY_BACKUP) keys.push(import.meta.env.VITE_GEMINI_API_KEY_BACKUP);
+        
+        keys = keys.filter(k => k && k.length > 10);
     } catch (e) {}
 
     if (keys.length > 0) return keys;
@@ -34,6 +36,9 @@ async function getGeminiApiKeysInternal(settings: SupabaseSettings, accessToken?
         if (primary) keys.push(primary);
         if (backup) keys.push(backup);
     }
+
+    // Remove duplicates
+    keys = [...new Set(keys)];
 
     if (keys.length === 0) {
         throw new Error("Missing Gemini Keys");
@@ -645,7 +650,7 @@ export const batchScorePoops = async (
                 let resultText = "";
                 let success = false;
                 
-                // Try up to 2 keys if needed
+                // Try up to all keys if needed
                 for (let k = 0; k < apiKeys.length; k++) {
                     const activeKey = apiKeys[(currentKeyIndex + k) % apiKeys.length];
                     const ai = new GoogleGenAI({ apiKey: activeKey });
@@ -667,17 +672,18 @@ export const batchScorePoops = async (
                         resultText = response.text || "";
                         if (resultText) {
                             success = true;
-                            // Keep using this key index if successful
+                            // Keep using this key index if successful to minimize rotation thrashing
                             currentKeyIndex = (currentKeyIndex + k) % apiKeys.length;
                             break;
                         }
                     } catch (err: any) {
                         const msg = err.message || "";
-                        if (msg.includes('429') || msg.includes('quota')) {
+                        // Simple 429 check for string message
+                        if (msg.includes('429') || msg.includes('quota') || msg.includes('Quota')) {
                             log(`⚠️ Cuota excedida en clave ${activeKey.slice(-4)}. Rotando...`);
                             continue; // Try next key
                         }
-                        // Other error, probably file issue, break to skip event
+                        // Other error, break to skip event
                         break;
                     }
                 }
