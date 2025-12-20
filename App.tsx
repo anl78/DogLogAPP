@@ -23,13 +23,10 @@ const DEFAULT_OWNER_PERMISSIONS: CollaboratorPermissions = { can_create: true, c
 const FALLBACK_URL = "https://nvnmlausdsexvmcrnzxc.supabase.co";
 const FALLBACK_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im52bm1sYXVzZHNleHZtY3JuenhjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM2NTE5MjAsImV4cCI6MjA3OTIyNzkyMH0.i2ddyT9GvT70bkIHqSW_whf9UMqqkNnAWawC4k91W0c";
 
-// Helper para asegurar que hay una API Key disponible
 const ensureApiKey = async () => {
-  // Si process.env.API_KEY ya tiene valor (inyectado por Vercel), no hacemos nada
   if (process.env.API_KEY && process.env.API_KEY.length > 5) {
     return;
   }
-
   const win = window as any;
   if (win.aistudio && typeof win.aistudio.hasSelectedApiKey === 'function') {
     const hasKey = await win.aistudio.hasSelectedApiKey();
@@ -41,14 +38,11 @@ const ensureApiKey = async () => {
 
 const App: React.FC = () => {
   const [settings] = useState<SupabaseSettings>({ supabaseUrl: FALLBACK_URL, supabaseKey: FALLBACK_KEY });
-  const [notionSettings, setNotionSettings] = useState<NotionSettings>({ apiKey: localStorage.getItem('NOTION_API_KEY') || '', databaseId: localStorage.getItem('NOTION_DB_ID') || '' });
   const [session, setSession] = useState<any>(null);
   const [pets, setPets] = useState<Pet[]>([]);
   const [currentPet, setCurrentPet] = useState<Pet | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [permissions, setPermissions] = useState<CollaboratorPermissions>(DEFAULT_OWNER_PERMISSIONS);
-  const [newPetName, setNewPetName] = useState('');
-  const [creatingPet, setCreatingPet] = useState(false);
   const [view, setView] = useState<'home' | 'board' | 'add' | 'settings' | 'consult' | 'stats' | 'dashboard'>('home');
   const [fullScreenImage, setFullScreenImage] = useState<string | null>(null);
   const [hasUnreadMessages, setHasUnreadMessages] = useState(false);
@@ -63,7 +57,6 @@ const App: React.FC = () => {
   const [draftEvent, setDraftEvent] = useState<Partial<DogEvent> | undefined>(undefined);
   const [inputMethod, setInputMethod] = useState<'menu' | 'voice' | 'chat' | 'manual'>('menu');
 
-  // Delete Account States
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteStep, setDeleteStep] = useState<'initial' | 'transfer' | 'final'>('initial');
   const [transferTarget, setTransferTarget] = useState('');
@@ -148,8 +141,8 @@ const App: React.FC = () => {
               healthStatus: result.healthStatus,
               description: result.description,
               weight: result.weight,
-              date: result.date || new Date().toISOString().split('T')[0],
-              time: result.time || new Date().toLocaleTimeString('es-ES', {hour: '2-digit', minute:'2-digit'}),
+              date: result.date,
+              time: result.time,
               poopScore: result.poopScore
           });
           setInputMethod('manual');
@@ -163,9 +156,9 @@ const App: React.FC = () => {
       setAiProcessing(true);
       await ensureApiKey();
       try {
-          // Extraer fecha de los metadatos del archivo (Capture time hint)
+          // Extraer fecha del archivo. En Android/iOS lastModified suele ser la fecha de toma original.
           const fileDate = new Date(file.lastModified);
-          const metadataHint = `FECHA METADATOS ARCHIVO: ${fileDate.toLocaleString('es-ES')}. Si esta fecha parece la de captura de la foto, úsala prioritariamente.`;
+          const metadataHint = `METADATOS_IMAGEN: FECHA=${fileDate.toISOString().split('T')[0]}, HORA=${fileDate.toLocaleTimeString('es-ES', {hour: '2-digit', minute:'2-digit'})}. USA ESTA FECHA PARA LOS CAMPOS 'date' Y 'time'.`;
           
           const base64 = await resizeImageForAI(file);
           const result = await analyzeImage(base64, settings, metadataHint, session?.access_token);
@@ -176,13 +169,18 @@ const App: React.FC = () => {
               healthStatus: result.healthStatus,
               description: result.description,
               weight: result.weight,
+              // Priorizamos lo que diga la IA, si falla usamos los metadatos locales
               date: result.date || fileDate.toISOString().split('T')[0],
               time: result.time || fileDate.toLocaleTimeString('es-ES', {hour: '2-digit', minute:'2-digit'}),
-              poopScore: result.recordType === RecordType.POOP ? result.poopScore : undefined,
+              poopScore: result.poopScore,
               photoBase64: base64
           });
           setInputMethod('manual');
-      } catch (error: any) { alert("Error analizando imagen: " + error.message); } finally { setAiProcessing(false); }
+      } catch (error: any) { 
+          alert("Error analizando imagen: " + error.message); 
+      } finally { 
+          setAiProcessing(false); 
+      }
   };
 
   const handleLogout = async () => { const client = createClient(settings.supabaseUrl, settings.supabaseKey); await client.auth.signOut(); };
