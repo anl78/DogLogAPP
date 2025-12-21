@@ -138,8 +138,8 @@ const App: React.FC = () => {
           const result = await analyzeAudio(base64Audio, settings, session?.access_token);
           setDraftEvent({
               title: result.title,
-              recordType: result.recordType,
-              healthStatus: result.healthStatus,
+              recordType: result.recordType as RecordType,
+              healthStatus: result.healthStatus as HealthStatus,
               description: result.description,
               weight: result.weight,
               date: result.date,
@@ -163,28 +163,18 @@ const App: React.FC = () => {
           
           try {
               const exif = await exifr.parse(file);
-              if (exif && exif.DateTimeOriginal) {
-                  // Cuando exifr lee DateTimeOriginal, los navegadores a menudo lo cargan como si fuera UTC.
-                  // Para evitar el desfase de zona horaria (ej: +2h en España), extraemos los componentes UTC.
-                  const d = new Date(exif.DateTimeOriginal);
-                  const YYYY = d.getUTCFullYear();
-                  const MM = String(d.getUTCMonth() + 1).padStart(2, '0');
-                  const DD = String(d.getUTCDate()).padStart(2, '0');
-                  const hh = String(d.getUTCHours()).padStart(2, '0');
-                  const mm = String(d.getUTCMinutes()).padStart(2, '0');
-                  formattedDate = `${YYYY}-${MM}-${DD}`;
-                  formattedTime = `${hh}:${mm}`;
-              } else {
-                  // Fallback: Si no hay EXIF, usamos lastModified (fecha del archivo)
-                  const d = new Date(file.lastModified);
-                  const YYYY = d.getFullYear();
-                  const MM = String(d.getMonth() + 1).padStart(2, '0');
-                  const DD = String(d.getDate()).padStart(2, '0');
-                  const hh = String(d.getHours()).padStart(2, '0');
-                  const mm = String(d.getMinutes()).padStart(2, '0');
-                  formattedDate = `${YYYY}-${MM}-${DD}`;
-                  formattedTime = `${hh}:${mm}`;
-              }
+              // Usamos métodos locales (no UTC) para evitar que el navegador reste/sume horas según la zona horaria del dispositivo,
+              // ya que la cámara suele guardar la hora tal cual aparece en el reloj del dispositivo.
+              const d = (exif && exif.DateTimeOriginal) ? new Date(exif.DateTimeOriginal) : new Date(file.lastModified);
+              
+              const YYYY = d.getFullYear();
+              const MM = String(d.getMonth() + 1).padStart(2, '0');
+              const DD = String(d.getDate()).padStart(2, '0');
+              const hh = String(d.getHours()).padStart(2, '0');
+              const mm = String(d.getMinutes()).padStart(2, '0');
+              
+              formattedDate = `${YYYY}-${MM}-${DD}`;
+              formattedTime = `${hh}:${mm}`;
           } catch (exifErr) {
               const d = new Date(file.lastModified);
               formattedDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -198,8 +188,8 @@ const App: React.FC = () => {
           
           setDraftEvent({
               title: result.title,
-              recordType: result.recordType,
-              healthStatus: result.healthStatus,
+              recordType: result.recordType as RecordType,
+              healthStatus: result.healthStatus as HealthStatus,
               description: result.description,
               weight: result.weight,
               date: result.date || formattedDate,

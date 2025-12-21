@@ -38,6 +38,22 @@ const getAIClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
+// Esquema común para todas las respuestas de análisis
+const ANALYSIS_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    title: { type: Type.STRING },
+    recordType: { type: Type.STRING, enum: Object.values(RecordType) },
+    healthStatus: { type: Type.STRING, enum: Object.values(HealthStatus), nullable: true },
+    description: { type: Type.STRING },
+    weight: { type: Type.NUMBER, nullable: true },
+    date: { type: Type.STRING, nullable: true },
+    time: { type: Type.STRING, nullable: true },
+    poopScore: { type: Type.INTEGER, nullable: true }
+  },
+  required: ["title", "recordType", "date", "time"]
+};
+
 export const analyzeInput = async (
   textInput: string,
   imageParts: string[] = [],
@@ -47,7 +63,6 @@ export const analyzeInput = async (
   const ai = getAIClient();
   const now = new Date();
   
-  // Si hay imágenes, el textInput contiene los metadatos EXIF extraídos por el cliente
   const promptText = imageParts.length > 0 
     ? `METADATOS_FOTO: ${textInput}`
     : `INSTRUCCIÓN: ${textInput}\nFECHA_ACTUAL: ${now.toLocaleString('es-ES')}`;
@@ -65,20 +80,7 @@ export const analyzeInput = async (
     config: {
       systemInstruction: SYSTEM_INSTRUCTION,
       responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          title: { type: Type.STRING },
-          recordType: { type: Type.STRING, enum: Object.values(RecordType) },
-          healthStatus: { type: Type.STRING, enum: Object.values(HealthStatus), nullable: true },
-          description: { type: Type.STRING },
-          weight: { type: Type.NUMBER, nullable: true },
-          date: { type: Type.STRING, nullable: true },
-          time: { type: Type.STRING, nullable: true },
-          poopScore: { type: Type.INTEGER, nullable: true }
-        },
-        required: ["title", "recordType", "date", "time"]
-      }
+      responseSchema: ANALYSIS_SCHEMA
     }
   });
 
@@ -99,13 +101,14 @@ export const analyzeAudio = async (audioBase64: string, settings: SupabaseSettin
         {
           parts: [
             { inlineData: { mimeType: "audio/mp3", data: audioBase64 } },
-            { text: `Hoy es ${now.toLocaleString('es-ES')}. Transcribe y extrae datos.` }
+            { text: `Hoy es ${now.toLocaleString('es-ES')}. Transcribe este audio y extrae los datos del evento del perro siguiendo las reglas de clasificación.` }
           ]
         }
       ],
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
-        responseMimeType: "application/json"
+        responseMimeType: "application/json",
+        responseSchema: ANALYSIS_SCHEMA
       }
     });
     if (!response.text) throw new Error("Audio vacío.");
@@ -126,7 +129,8 @@ export const analyzeFile = async (base64Data: string, mimeType: string, settings
       ],
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
-        responseMimeType: "application/json"
+        responseMimeType: "application/json",
+        responseSchema: ANALYSIS_SCHEMA
       }
     });
     if (!response.text) throw new Error("Archivo vacío.");
