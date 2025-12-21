@@ -8,20 +8,22 @@ const SYSTEM_INSTRUCTION = `
 Eres un asistente veterinario experto. Tu tarea es analizar imágenes, audios o textos de un dueño de perro.
 
 REGLAS DE CLASIFICACIÓN VISUAL (CRÍTICO):
-Analiza la imagen adjunta y clasifícala en uno de estos tipos:
-- 'Comida': Si ves cuencos, sacos de pienso o comida casera.
-- 'Medicamento': Si ves pastillas, botes de jarabe, jeringuillas o cajas de fármacos.
-- 'Vómito': Si ves manchas de fluido estomacal o comida devuelta.
-- 'Caca': Si ves excrementos. Evalúa también la consistencia (poopScore 1-10).
-- 'Analiticas': Si ves informes médicos, papeles con resultados o facturas veterinarias.
-- 'Coche': Si la foto es dentro de un coche o transportín.
-- 'Incidente': Si ves una herida o algo inusual.
+Analiza la imagen adjunta y clasifícala estrictamente en uno de estos tipos de 'recordType':
+- 'Caca': Excrementos. Evalúa consistencia (poopScore 1-10).
+- 'Comida': Cuencos, sacos de pienso, comida casera.
+- 'Medicamento': Pastillas, jarabes, inyecciones, cajas de fármacos.
+- 'Veterinario': Consultas, veterinarios, clínicas.
+- 'Comportamiento': Acciones del perro, estado de ánimo.
+- 'Resumen': Resúmenes semanales o notas generales.
+- 'Analiticas': Informes médicos, analíticas de sangre, facturas.
+- 'Vómito': Manchas de fluido estomacal, comida devuelta.
+- 'Coche': Perro en el coche, transportín, viajes.
+- 'Incidente': Heridas, accidentes, cosas inusuales.
 
 REGLA DE FECHA Y HORA (MANDATORIO):
-1. Si el mensaje de entrada contiene "METADATOS_IMAGEN", DEBES usar obligatoriamente esa fecha y hora para los campos 'date' y 'time'. No uses la fecha de hoy.
-2. Solo si NO hay metadatos de imagen ni se menciona una fecha en el texto, usa la fecha actual proporcionada como fallback.
-
-SALIDA: Devuelve siempre JSON con title, recordType, description, date (YYYY-MM-DD), time (HH:MM), healthStatus, weight (si aplica) y poopScore (si es caca).
+1. Si recibes un bloque "METADATOS_FOTO", DEBES usar esa fecha y hora EXACTAMENTE para los campos 'date' y 'time'. Es la fecha real de captura contenida en el EXIF.
+2. Solo si NO hay metadatos específicos de foto, usa la fecha actual proporcionada.
+3. El formato de 'date' debe ser YYYY-MM-DD y 'time' HH:MM.
 `;
 
 const CONSULTANT_INSTRUCTION = `
@@ -45,10 +47,10 @@ export const analyzeInput = async (
   const ai = getAIClient();
   const now = new Date();
   
-  // Estructuramos el prompt para que los metadatos tengan prioridad visual absoluta
+  // Si hay imágenes, el textInput contiene los metadatos EXIF extraídos por el cliente
   const promptText = imageParts.length > 0 
-    ? `DATOS DE LA FOTO: ${textInput}\n\n[CONTEXTO SISTEMA: Si no hay datos arriba, hoy es ${now.toLocaleString('es-ES')}]`
-    : `INSTRUCCIÓN: ${textInput}\nFECHA ACTUAL: ${now.toLocaleString('es-ES')}`;
+    ? `METADATOS_FOTO: ${textInput}`
+    : `INSTRUCCIÓN: ${textInput}\nFECHA_ACTUAL: ${now.toLocaleString('es-ES')}`;
 
   const response = await ai.models.generateContent({
     model: MODEL_NAME,

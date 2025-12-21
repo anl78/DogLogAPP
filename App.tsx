@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
+import exifr from 'exifr';
 import { DogEvent, SupabaseSettings, HealthStatus, AIAnalysisResult, RecordType, Pet, CollaboratorPermissions, NotionSettings } from './types';
 import { saveEventToSupabase, testSupabaseConnection, searchEvents, deleteEvent, getUserPets, createPet, getCollaboratorPermissions, checkUnreadMessages, deleteUserAccount, transferPetOwnership, deletePetCompletely, getCollaborators } from './services/supabaseService';
 import { sendToNotion } from './services/notionService';
@@ -156,9 +157,41 @@ const App: React.FC = () => {
       setAiProcessing(true);
       await ensureApiKey();
       try {
-          // Extraer fecha del archivo. En Android/iOS lastModified suele ser la fecha de toma original.
-          const fileDate = new Date(file.lastModified);
-          const metadataHint = `METADATOS_IMAGEN: FECHA=${fileDate.toISOString().split('T')[0]}, HORA=${fileDate.toLocaleTimeString('es-ES', {hour: '2-digit', minute:'2-digit'})}. USA ESTA FECHA PARA LOS CAMPOS 'date' Y 'time'.`;
+          // Extraer fecha real de los metadatos EXIF usando exifr
+          let formattedDate: string;
+          let formattedTime: string;
+          
+          try {
+              const exif = await exifr.parse(file);
+              if (exif && exif.DateTimeOriginal) {
+                  // Cuando exifr lee DateTimeOriginal, los navegadores a menudo lo cargan como si fuera UTC.
+                  // Para evitar el desfase de zona horaria (ej: +2h en España), extraemos los componentes UTC.
+                  const d = new Date(exif.DateTimeOriginal);
+                  const YYYY = d.getUTCFullYear();
+                  const MM = String(d.getUTCMonth() + 1).padStart(2, '0');
+                  const DD = String(d.getUTCDate()).padStart(2, '0');
+                  const hh = String(d.getUTCHours()).padStart(2, '0');
+                  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+                  formattedDate = `${YYYY}-${MM}-${DD}`;
+                  formattedTime = `${hh}:${mm}`;
+              } else {
+                  // Fallback: Si no hay EXIF, usamos lastModified (fecha del archivo)
+                  const d = new Date(file.lastModified);
+                  const YYYY = d.getFullYear();
+                  const MM = String(d.getMonth() + 1).padStart(2, '0');
+                  const DD = String(d.getDate()).padStart(2, '0');
+                  const hh = String(d.getHours()).padStart(2, '0');
+                  const mm = String(d.getMinutes()).padStart(2, '0');
+                  formattedDate = `${YYYY}-${MM}-${DD}`;
+                  formattedTime = `${hh}:${mm}`;
+              }
+          } catch (exifErr) {
+              const d = new Date(file.lastModified);
+              formattedDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+              formattedTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+          }
+
+          const metadataHint = `FECHA=${formattedDate}, HORA=${formattedTime}. ESTA ES LA FECHA REAL DE CAPTURA DE LA FOTO (EXIF). ÚSALA OBLIGATORIAMENTE.`;
           
           const base64 = await resizeImageForAI(file);
           const result = await analyzeImage(base64, settings, metadataHint, session?.access_token);
@@ -169,9 +202,8 @@ const App: React.FC = () => {
               healthStatus: result.healthStatus,
               description: result.description,
               weight: result.weight,
-              // Priorizamos lo que diga la IA, si falla usamos los metadatos locales
-              date: result.date || fileDate.toISOString().split('T')[0],
-              time: result.time || fileDate.toLocaleTimeString('es-ES', {hour: '2-digit', minute:'2-digit'}),
+              date: result.date || formattedDate,
+              time: result.time || formattedTime,
               poopScore: result.poopScore,
               photoBase64: base64
           });
