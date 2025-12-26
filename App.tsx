@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import exifr from 'exifr';
@@ -287,7 +288,17 @@ const App: React.FC = () => {
                                             <span className="text-[10px] text-slate-400">{ev.date}</span>
                                         </div>
                                     </div>
-                                    {eventPhoto && <div className="w-28 shrink-0 overflow-hidden bg-slate-100"><img src={eventPhoto} alt={ev.title} className="w-full h-full object-cover" /></div>}
+                                    {eventPhoto && (
+                                        <div 
+                                          className="w-28 shrink-0 overflow-hidden bg-slate-100"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setFullScreenImage(eventPhoto);
+                                          }}
+                                        >
+                                          <img src={eventPhoto} alt={ev.title} className="w-full h-full object-cover" />
+                                        </div>
+                                    )}
                                 </div>
                             );
                         })}
