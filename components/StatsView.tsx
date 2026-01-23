@@ -9,6 +9,7 @@ interface StatsViewProps {
   settings: SupabaseSettings;
   petId: string;
   accessToken?: string;
+  onEventClick: (event: DogEvent) => void;
 }
 
 // Helper to group events by day
@@ -21,7 +22,7 @@ const groupByDay = (events: DogEvent[]) => {
     return groups;
 };
 
-const StatsView: React.FC<StatsViewProps> = ({ settings, petId, accessToken }) => {
+const StatsView: React.FC<StatsViewProps> = ({ settings, petId, accessToken, onEventClick }) => {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [events, setEvents] = useState<DogEvent[]>([]);
@@ -142,19 +143,26 @@ const StatsView: React.FC<StatsViewProps> = ({ settings, petId, accessToken }) =
                                                 return (
                                                     <div 
                                                         key={ev.id} 
-                                                        className={`p-2 rounded-xl border-l-4 shadow-sm bg-white relative overflow-hidden ${colorClass.replace('bg-', 'border-').split(' ')[2]}`}
+                                                        onClick={() => onEventClick(ev)}
+                                                        className={`p-2 rounded-xl border-l-4 shadow-sm bg-white relative overflow-hidden cursor-pointer active:scale-95 transition-transform hover:opacity-95 ${colorClass.replace('bg-', 'border-').split(' ')[2]}`}
                                                     >
                                                         <div className="flex justify-between items-start mb-1">
                                                             <span className="text-xs font-bold text-slate-700">{ev.time}</span>
                                                             <span className={`text-[10px] px-1.5 rounded text-white font-bold ${colorClass.split(' ')[0]}`}>{score}/10</span>
                                                         </div>
                                                         {ev.photoUrl && (
-                                                            <div className="h-28 w-full rounded-lg bg-slate-100 mb-1 overflow-hidden">
+                                                            <div className="h-28 w-full rounded-lg bg-slate-100 mb-1 overflow-hidden relative group">
                                                                 <img 
                                                                     src={ev.photoUrl} 
-                                                                    className="w-full h-full object-cover cursor-pointer hover:opacity-90" 
-                                                                    onClick={() => setViewImage(ev.photoUrl!)}
+                                                                    className="w-full h-full object-cover cursor-zoom-in hover:opacity-90 transition-opacity" 
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        setViewImage(ev.photoUrl!);
+                                                                    }}
                                                                 />
+                                                                <div className="absolute top-1 right-1 bg-black/30 rounded p-0.5 pointer-events-none">
+                                                                    <Icons.ImagePlus className="w-3 h-3 text-white" />
+                                                                </div>
                                                             </div>
                                                         )}
                                                         <p className="text-[10px] text-slate-500 line-clamp-2 leading-tight">{ev.description || ev.title}</p>
@@ -162,31 +170,32 @@ const StatsView: React.FC<StatsViewProps> = ({ settings, petId, accessToken }) =
                                                 );
                                             })}
                                             {vomits.map(ev => {
-                                                if (ev.photoUrl) {
-                                                    return (
-                                                        <div key={ev.id} className="p-2 rounded-xl border-l-4 border-orange-500 shadow-sm bg-white relative overflow-hidden">
-                                                            <div className="flex justify-between items-start mb-1">
-                                                                <span className="text-xs font-bold text-orange-800">🤮 Vómito</span>
-                                                                <span className="text-[10px] text-slate-400">{ev.time}</span>
-                                                            </div>
-                                                            <div className="h-28 w-full rounded-lg bg-slate-100 mb-1 overflow-hidden">
+                                                return (
+                                                    <div 
+                                                        key={ev.id} 
+                                                        onClick={() => onEventClick(ev)}
+                                                        className={`p-2 rounded-xl border-l-4 border-orange-500 shadow-sm relative overflow-hidden cursor-pointer active:scale-95 transition-transform hover:opacity-95 ${ev.photoUrl ? 'bg-white' : 'bg-orange-50'}`}
+                                                    >
+                                                        <div className="flex justify-between items-start mb-1">
+                                                            <span className="text-xs font-bold text-orange-800">🤮 Vómito</span>
+                                                            <span className={`text-[10px] ${ev.photoUrl ? 'text-slate-400' : 'text-orange-600'}`}>{ev.time}</span>
+                                                        </div>
+                                                        {ev.photoUrl && (
+                                                            <div className="h-28 w-full rounded-lg bg-slate-100 mb-1 overflow-hidden relative group">
                                                                 <img 
                                                                     src={ev.photoUrl} 
-                                                                    className="w-full h-full object-cover cursor-pointer hover:opacity-90" 
-                                                                    onClick={() => setViewImage(ev.photoUrl!)}
+                                                                    className="w-full h-full object-cover cursor-zoom-in hover:opacity-90 transition-opacity" 
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        setViewImage(ev.photoUrl!);
+                                                                    }}
                                                                 />
+                                                                 <div className="absolute top-1 right-1 bg-black/30 rounded p-0.5 pointer-events-none">
+                                                                    <Icons.ImagePlus className="w-3 h-3 text-white" />
+                                                                </div>
                                                             </div>
-                                                            <p className="text-[10px] text-slate-500 line-clamp-2 leading-tight">{ev.description || ev.title}</p>
-                                                        </div>
-                                                    );
-                                                }
-                                                return (
-                                                    <div key={ev.id} className="p-2 rounded-xl border-l-4 border-orange-500 bg-orange-50 shadow-sm">
-                                                        <div className="flex justify-between items-start mb-1">
-                                                             <span className="text-xs font-bold text-orange-800">🤮 Vómito</span>
-                                                             <span className="text-[10px] text-orange-600">{ev.time}</span>
-                                                        </div>
-                                                        <p className="text-[10px] text-orange-700 line-clamp-3">{ev.description || ev.title}</p>
+                                                        )}
+                                                        <p className={`text-[10px] line-clamp-2 leading-tight ${ev.photoUrl ? 'text-slate-500' : 'text-orange-700'}`}>{ev.description || ev.title}</p>
                                                     </div>
                                                 );
                                             })}
@@ -214,7 +223,10 @@ const StatsView: React.FC<StatsViewProps> = ({ settings, petId, accessToken }) =
                                                         ev.recordType === RecordType.BEHAVIOR ? 'bg-blue-400' : 'bg-slate-400'
                                                     }`}></div>
                                                     
-                                                    <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
+                                                    <div 
+                                                        className="bg-slate-50 p-2 rounded-lg border border-slate-100 cursor-pointer active:scale-95 transition-transform hover:bg-slate-100/80 hover:border-blue-200"
+                                                        onClick={() => onEventClick(ev)}
+                                                    >
                                                         <div className="flex justify-between">
                                                             <span className="text-[10px] font-bold text-slate-600 uppercase">{ev.recordType}</span>
                                                             <span className="text-[10px] text-slate-400">{ev.time}</span>

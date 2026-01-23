@@ -38,6 +38,62 @@ const ensureApiKey = async () => {
   }
 };
 
+const DB_FIX_SCRIPT = `
+-- 🛠️ SOLUCIÓN DEFINITIVA PARA BUCLE INFINITO (RLS) 🛠️
+-- Ejecuta TODO este bloque en el SQL Editor de Supabase.
+
+-- 1. Función de Seguridad para romper el bucle
+-- Permite verificar el dueño sin activar las políticas de la tabla 'pets' recursivamente.
+CREATE OR REPLACE FUNCTION public.is_pet_owner(_pet_id uuid)
+RETURNS boolean AS $$
+BEGIN
+  RETURN EXISTS (SELECT 1 FROM public.pets WHERE id = _pet_id AND owner_id = auth.uid());
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 2. Limpieza TOTAL de políticas antiguas (Borrador Inteligente)
+DO $$ 
+DECLARE 
+  pol record; 
+BEGIN 
+  -- Busca y borra CUALQUIER política en estas tablas para asegurar limpieza
+  FOR pol IN SELECT policyname, tablename FROM pg_policies WHERE tablename IN ('pets', 'pet_collaborators') 
+  LOOP 
+    EXECUTE format('DROP POLICY IF EXISTS %I ON %I', pol.policyname, pol.tablename); 
+  END LOOP; 
+END $$;
+
+-- 3. Políticas para MASCOTAS (pets)
+ALTER TABLE pets ENABLE ROW LEVEL SECURITY;
+
+-- El dueño tiene acceso total
+CREATE POLICY "Owner All Access" ON pets
+FOR ALL USING (auth.uid() = owner_id);
+
+-- Los colaboradores pueden VER (esto consulta pet_collaborators)
+CREATE POLICY "Collaborator View" ON pets
+FOR SELECT USING (
+  EXISTS (
+    SELECT 1 FROM pet_collaborators
+    WHERE pet_id = pets.id AND user_id = auth.uid()
+  )
+);
+
+-- 4. Políticas para COLABORADORES (pet_collaborators)
+ALTER TABLE pet_collaborators ENABLE ROW LEVEL SECURITY;
+
+-- Un usuario puede ver las filas donde él es el colaborador
+CREATE POLICY "Self View Permissions" ON pet_collaborators
+FOR SELECT USING (user_id = auth.uid());
+
+-- El dueño puede GESTIONAR colaboradores
+-- IMPORTANTE: Usa la función is_pet_owner() para evitar el bucle infinito
+CREATE POLICY "Owner Manage Collaborators" ON pet_collaborators
+FOR ALL USING (public.is_pet_owner(pet_id));
+
+-- ✅ FIN DEL SCRIPT
+`;
+
 const App: React.FC = () => {
   const [settings] = useState<SupabaseSettings>({ supabaseUrl: FALLBACK_URL, supabaseKey: FALLBACK_KEY });
   const [session, setSession] = useState<any>(null);
@@ -45,7 +101,11 @@ const App: React.FC = () => {
   const [currentPet, setCurrentPet] = useState<Pet | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [permissions, setPermissions] = useState<CollaboratorPermissions>(DEFAULT_OWNER_PERMISSIONS);
+  
+  // Navigation State
   const [view, setView] = useState<'home' | 'board' | 'add' | 'settings' | 'consult' | 'stats' | 'dashboard'>('home');
+  const [previousView, setPreviousView] = useState<'home' | 'board' | 'add' | 'settings' | 'consult' | 'stats' | 'dashboard'>('home');
+
   const [fullScreenImage, setFullScreenImage] = useState<string | null>(null);
   const [hasUnreadMessages, setHasUnreadMessages] = useState(false);
   const [events, setEvents] = useState<DogEvent[]>([]);
@@ -59,10 +119,15 @@ const App: React.FC = () => {
   const [draftEvent, setDraftEvent] = useState<Partial<DogEvent> | undefined>(undefined);
   const [inputMethod, setInputMethod] = useState<'menu' | 'voice' | 'chat' | 'manual'>('menu');
 
+  // Error States
+  const [dbError, setDbError] = useState<any>(null);
+
+  // Delete & Create Pet State
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteStep, setDeleteStep] = useState<'initial' | 'transfer' | 'final'>('initial');
   const [transferTarget, setTransferTarget] = useState('');
   const [petCollabs, setPetCollabs] = useState<any[]>([]);
+  const [newPetName, setNewPetName] = useState('');
 
   useEffect(() => {
     const client = createClient(settings.supabaseUrl, settings.supabaseKey);
@@ -73,7 +138,22 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (session) {
-      getUserPets(settings, session.access_token).then(userPets => { setPets(userPets); if (userPets.length > 0 && !currentPet) setCurrentPet(userPets[0]); setAuthLoading(false); });
+      getUserPets(settings, session.access_token).then(res => { 
+        if (res.error) {
+            console.error("Critical DB Error:", res.error);
+            setDbError(res.error);
+            if (res.error.code === "42P17" || res.error.message?.includes("recursion")) {
+                setView('settings'); // Force user to settings to see the fix
+            }
+        }
+        setPets(res.pets); 
+        if (res.pets.length > 0) {
+            if (!currentPet || !res.pets.find(p => p.id === currentPet.id)) {
+                setCurrentPet(res.pets[0]);
+            }
+        }
+        setAuthLoading(false); 
+      });
     }
   }, [session, settings]);
 
@@ -96,6 +176,27 @@ const App: React.FC = () => {
     if (view !== 'add') setDraftEvent(undefined);
   }, [view]);
 
+  // Reload pets function (available in scope)
+  const reloadPets = async () => {
+      if (!session) return;
+      const res = await getUserPets(settings, session.access_token);
+      
+      if (res.error) {
+          setDbError(res.error);
+          alert("Error cargando mascotas: " + (res.error.message || res.error.code));
+      } else {
+          setDbError(null);
+      }
+      
+      setPets(res.pets);
+      if (res.pets.length > 0) {
+           if(!currentPet || !res.pets.find(p => p.id === currentPet.id)) {
+               setCurrentPet(res.pets[0]);
+           }
+      }
+      alert(`Lista recargada. Encontradas: ${res.pets.length}`);
+  };
+
   const fetchEvents = async (reset: boolean = false) => {
     if (!currentPet || !session) return;
     setIsSyncing(true);
@@ -104,6 +205,23 @@ const App: React.FC = () => {
     if (reset) { setEvents(newBatch); setPage(1); } else { setEvents(prev => [...prev, ...newBatch]); setPage(prev => prev + 1); }
     setHasMore(newBatch.length === PAGE_SIZE);
     setIsSyncing(false);
+  };
+
+  const handleCreatePet = async () => {
+    if(!newPetName.trim() || !session) return;
+    const { pet, error } = await createPet(settings, newPetName.trim(), session.user.id, session.access_token);
+    
+    if (error) {
+        alert(`Error creando mascota: ${error}`);
+        return;
+    }
+
+    if(pet) {
+        setPets(prev => [...prev, pet]);
+        setCurrentPet(pet);
+        setNewPetName('');
+        alert("¡Mascota creada correctamente!");
+    }
   };
 
   const resizeImageForAI = (file: File): Promise<string> => {
@@ -266,7 +384,16 @@ const App: React.FC = () => {
                         {events.map(ev => {
                             const eventPhoto = ev.photoUrl || ev.photoBase64;
                             return (
-                                <div key={ev.id} onClick={() => { setDraftEvent(ev); setInputMethod('manual'); setView('add'); }} className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100 cursor-pointer active:scale-[0.98] transition-transform flex flex-row items-stretch min-h-[140px]">
+                                <div 
+                                    key={ev.id} 
+                                    onClick={() => { 
+                                        setDraftEvent(ev); 
+                                        setInputMethod('manual'); 
+                                        setPreviousView('home'); 
+                                        setView('add'); 
+                                    }} 
+                                    className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100 cursor-pointer active:scale-[0.98] transition-transform flex flex-row items-stretch min-h-[140px]"
+                                >
                                     <div className="p-4 flex-1 flex flex-col justify-between">
                                         <div>
                                             <div className="flex justify-between items-start mb-2">
@@ -302,22 +429,130 @@ const App: React.FC = () => {
                                 </div>
                             );
                         })}
-                        {events.length === 0 && !isSyncing && <div className="flex flex-col items-center justify-center py-20 text-slate-400"><Icons.Activity className="w-12 h-12 mb-4 opacity-20" /><p className="text-sm">No hay eventos.</p></div>}
-                        {hasMore && <button onClick={() => fetchEvents()} disabled={isSyncing} className="w-full py-4 text-sm text-blue-600 font-bold">{isSyncing ? 'Cargando...' : 'Cargar más'}</button>}
+                        {events.length === 0 && !isSyncing && (
+                            <div className="flex flex-col items-center justify-center py-20 text-slate-400">
+                                <Icons.Activity className="w-12 h-12 mb-4 opacity-20" />
+                                <p className="text-sm mb-4">
+                                  {pets.length === 0 ? "No tienes mascotas registradas." : "No hay eventos visibles."}
+                                </p>
+                                {pets.length === 0 ? (
+                                    <button onClick={() => setView('settings')} className="text-blue-600 text-xs font-bold underline bg-blue-50 px-3 py-2 rounded-lg">
+                                        Crear Mascota en Ajustes
+                                    </button>
+                                ) : (
+                                    <button onClick={() => fetchEvents(true)} className="text-blue-600 text-xs font-bold underline bg-blue-50 px-3 py-2 rounded-lg">
+                                        Recargar Lista
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                        {hasMore && events.length > 0 && <button onClick={() => fetchEvents()} disabled={isSyncing} className="w-full py-4 text-sm text-blue-600 font-bold">{isSyncing ? 'Cargando...' : 'Cargar más'}</button>}
                     </div>
                 </div>
             )}
             {view === 'board' && currentPet && <BoardView settings={settings} petId={currentPet.id} currentUserId={session.user.id} accessToken={session.access_token}/>}
-            {view === 'stats' && currentPet && <StatsView settings={settings} petId={currentPet.id} accessToken={session.access_token} />}
+            {view === 'stats' && currentPet && (
+                <StatsView 
+                    settings={settings} 
+                    petId={currentPet.id} 
+                    accessToken={session.access_token} 
+                    onEventClick={(ev) => { 
+                        setDraftEvent(ev); 
+                        setInputMethod('manual'); 
+                        setPreviousView('stats');
+                        setView('add'); 
+                    }}
+                />
+            )}
             {view === 'dashboard' && currentPet && <DashboardView settings={settings} petId={currentPet.id} accessToken={session.access_token} />}
-            {view === 'consult' && <AIQueryView settings={settings} onEventClick={(ev) => { setDraftEvent(ev); setInputMethod('manual'); setView('add'); }} currentPetId={currentPet?.id || ''} accessToken={session.access_token}/>}
+            {view === 'consult' && (
+                <AIQueryView 
+                    settings={settings} 
+                    onEventClick={(ev) => { 
+                        setDraftEvent(ev); 
+                        setInputMethod('manual'); 
+                        setPreviousView('consult');
+                        setView('add'); 
+                    }} 
+                    currentPetId={currentPet?.id || ''} 
+                    accessToken={session.access_token}
+                />
+            )}
             {view === 'settings' && (
                  <div className="p-6 overflow-y-auto h-full pb-24">
                      <h2 className="text-2xl font-bold mb-6">Ajustes</h2>
-                     <div className="mb-6"><label className="block text-sm font-medium text-slate-700 mb-2">Mascota Activa</label>
-                        <select value={currentPet?.id || ''} onChange={(e) => { const s = pets.find(p => p.id === e.target.value); if(s) setCurrentPet(s); }} className="w-full p-3 rounded-xl border border-slate-200 bg-white">
-                            {pets.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                     
+                     {/* DB REPAIR SECTION - Visible ONLY on Error */}
+                     {(dbError && (dbError.code === "42P17" || dbError.message?.includes("recursion"))) && (
+                         <div className="mb-8 p-4 bg-red-50 border-2 border-red-200 rounded-xl animate-fade-in-down">
+                             <div className="flex items-start gap-3 mb-3">
+                                <Icons.AlertTriangle className="w-6 h-6 text-red-600 shrink-0" />
+                                <div>
+                                    <h3 className="font-bold text-red-700">Error Crítico: Bucle Infinito en BD</h3>
+                                    <p className="text-xs text-red-600 mt-1">
+                                        Las políticas de seguridad de tu base de datos están mal configuradas (Recursión Infinita). 
+                                        Esto impide ver o guardar mascotas.
+                                    </p>
+                                </div>
+                             </div>
+                             <p className="text-xs font-bold text-slate-600 mb-2">SOLUCIÓN DEFINITIVA: Copia este código actualizado y ejecútalo en el "SQL Editor" de Supabase.</p>
+                             <div className="bg-yellow-50 p-2 rounded mb-2 border border-yellow-200 text-[10px] text-yellow-800 font-bold">
+                                ℹ️ Supabase te avisará de que es una "Operación Destructiva". NO TE ASUSTES. Es necesario borrar las políticas antiguas para poner las nuevas. TUS DATOS ESTÁN SEGUROS.
+                             </div>
+                             <div className="relative">
+                                <pre className="text-[10px] bg-slate-800 text-green-400 p-3 rounded-lg overflow-x-auto whitespace-pre-wrap font-mono">
+                                    {DB_FIX_SCRIPT}
+                                </pre>
+                                <button 
+                                    onClick={() => navigator.clipboard.writeText(DB_FIX_SCRIPT).then(() => alert("Copiado al portapapeles"))}
+                                    className="absolute top-2 right-2 px-2 py-1 bg-white text-slate-800 text-[10px] font-bold rounded hover:bg-slate-100"
+                                >
+                                    COPIAR
+                                </button>
+                             </div>
+                         </div>
+                     )}
+
+                     <div className="mb-6">
+                        <div className="flex gap-2 items-end mb-2">
+                             <label className="block text-sm font-medium text-slate-700 flex-1">Mascota Activa</label>
+                             <button onClick={reloadPets} className="text-xs text-blue-600 underline">Refrescar lista</button>
+                        </div>
+                        <select 
+                            value={currentPet?.id || ''} 
+                            onChange={(e) => { const s = pets.find(p => p.id === e.target.value); if(s) setCurrentPet(s); }} 
+                            className="w-full p-3 rounded-xl border border-slate-200 bg-white text-slate-900"
+                        >
+                            <option value="" disabled>-- Seleccionar --</option>
+                            {pets.length === 0 ? (
+                                <option value="" disabled>No hay mascotas encontradas</option>
+                            ) : (
+                                pets.map(p => <option key={p.id} value={p.id}>{p.name}</option>)
+                            )}
                         </select>
+                     </div>
+                     
+                     {/* Manual Pet Creation */}
+                     <div className="mb-6 p-4 bg-white rounded-xl border border-slate-200">
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Crear Nueva Mascota</label>
+                        <div className="flex gap-2">
+                            <input 
+                                type="text" 
+                                value={newPetName} 
+                                onChange={(e) => setNewPetName(e.target.value)} 
+                                placeholder="Nombre (ej: Toby)"
+                                className="flex-1 p-2 rounded-lg border border-slate-200 text-sm"
+                            />
+                            <button onClick={handleCreatePet} className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold text-sm">Crear</button>
+                        </div>
+                     </div>
+
+                     <div className="mb-6 p-4 bg-slate-100 rounded-xl border border-slate-200">
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Tu ID de Usuario</label>
+                        <code className="block text-xs bg-white p-2 rounded border border-slate-200 break-all select-all text-slate-600">
+                            {session?.user?.id}
+                        </code>
+                        <p className="text-[10px] text-slate-400 mt-1">Úsalo en scripts SQL si necesitas arreglar permisos.</p>
                      </div>
                      {currentPet && session?.user && <TeamManager settings={settings} currentPet={currentPet} currentUserId={session.user.id} accessToken={session.access_token}/>}
                      {currentPet?.owner_id === session?.user?.id && <MigrationPanel supabaseSettings={settings} currentPet={currentPet} currentUser={session?.user} accessToken={session.access_token}/>}
@@ -339,7 +574,19 @@ const App: React.FC = () => {
                         </div>
                     )}
                     {inputMethod === 'voice' && <div className="h-full flex flex-col items-center justify-center"><h3 className="text-xl font-bold text-slate-700 mb-8">Grabando...</h3><AudioRecorder onAudioCaptured={handleAudioCaptured} isProcessing={aiProcessing} /><button onClick={() => setInputMethod('menu')} className="mt-12 text-slate-400">Cancelar</button></div>}
-                    {inputMethod === 'manual' && <EventForm initialData={draftEvent} onSubmit={handleEventSubmit} onCancel={()=>setView('home')} onDelete={draftEvent?.id?()=>handleDeleteEvent(draftEvent as DogEvent):undefined} canEdit={permissions.can_edit !== 'none'} canDelete={permissions.can_delete !== 'none'}/>}
+                    
+                    {/* Event Form: Using previousView for correct back navigation */}
+                    {inputMethod === 'manual' && (
+                        <EventForm 
+                            initialData={draftEvent} 
+                            onSubmit={handleEventSubmit} 
+                            onCancel={() => setView(previousView)} 
+                            onDelete={draftEvent?.id ? () => handleDeleteEvent(draftEvent as DogEvent) : undefined} 
+                            canEdit={permissions.can_edit !== 'none'} 
+                            canDelete={permissions.can_delete !== 'none'}
+                        />
+                    )}
+                    
                     {aiProcessing && <div className="absolute inset-0 bg-white/80 z-50 flex flex-col items-center justify-center backdrop-blur-sm"><div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div><p className="font-bold text-slate-700">Analizando con IA...</p></div>}
                 </div>
             )}
@@ -351,19 +598,33 @@ const App: React.FC = () => {
   );
 
   async function handleEventSubmit(event: DogEvent) {
-    if (!currentPet || !session) return;
+    if (!session) return;
+    if (!currentPet) {
+        alert("⚠️ Error: No tienes ninguna mascota seleccionada. Ve a Ajustes y crea o selecciona una mascota para poder guardar eventos.");
+        return;
+    }
+    
     setIsLoading(true);
     event.petId = currentPet.id;
     if (!event.userId) event.userId = session.user.id;
     const res = await saveEventToSupabase(event, settings, session.access_token);
-    if (res.success) { setView('home'); fetchEvents(true); }
+    
+    if (res.success) { 
+        setView(previousView); // Return to origin (Home, Stats, Consult)
+        if (previousView === 'home') fetchEvents(true); // Only refresh main list if needed
+    } else { 
+        alert("Error guardando: " + res.error); 
+    }
     setIsLoading(false);
   }
 
   async function handleDeleteEvent(event: DogEvent) {
     if (!session) return;
     const res = await deleteEvent(event.id, event.photoUrl, settings, session.access_token);
-    if (res.success) { setView('home'); fetchEvents(true); }
+    if (res.success) { 
+        setView(previousView); 
+        if (previousView === 'home') fetchEvents(true);
+    }
   }
 };
 

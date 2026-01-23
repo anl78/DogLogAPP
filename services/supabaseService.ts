@@ -53,24 +53,82 @@ export const testSupabaseConnection = async (settings: SupabaseSettings): Promis
     }
 };
 
-export const getUserPets = async (settings: SupabaseSettings, accessToken?: string): Promise<Pet[]> => {
+export const getUserPets = async (settings: SupabaseSettings, accessToken?: string): Promise<{ pets: Pet[], error?: any }> => {
     try {
         const client = createFreshClient(settings, accessToken);
-        if (!client) return [];
+        if (!client) return { pets: [], error: "Cliente no inicializado" };
         const { data: { user } } = await client.auth.getUser();
-        if (!user) return [];
-        const { data, error } = await client.from('pet_collaborators').select(`pets (id, name, photo_url, owner_id)`).eq('user_id', user.id);
-        if (error) return [];
-        return (data || []).map((row: any) => row.pets as Pet).filter(p => !!p);
-    } catch (e) { return []; }
+        if (!user) return { pets: [], error: "No usuario" };
+
+        // 1. Fetch Owned Pets directly
+        const { data: ownedPets, error: ownError } = await client
+            .from('pets')
+            .select('id, name, photo_url, owner_id')
+            .eq('owner_id', user.id);
+        
+        if (ownError) {
+            console.error("Error fetching owned pets:", ownError);
+            return { pets: [], error: ownError };
+        }
+
+        // 2. Fetch Collaborated Pets
+        const { data: collabData, error: collabError } = await client
+            .from('pet_collaborators')
+            .select(`pets (id, name, photo_url, owner_id)`)
+            .eq('user_id', user.id);
+            
+        if (collabError) {
+             console.error("Error fetching collab pets:", collabError);
+             // If owned pets worked but collab failed, return owned pets but signal warning?
+             // For recursion error, usually both fail or one blocks the other.
+             // We return error if ownedPets is empty, otherwise we return what we have.
+             if (!ownedPets || ownedPets.length === 0) {
+                 return { pets: [], error: collabError };
+             }
+        }
+        
+        const collabPets = (collabData || []).map((row: any) => row.pets as Pet).filter(p => !!p);
+
+        // 3. Merge and deduplicate by ID
+        const all = [...(ownedPets || []), ...collabPets];
+        const uniqueMap = new Map();
+        all.forEach(p => { if(p && p.id) uniqueMap.set(p.id, p); });
+        
+        return { pets: Array.from(uniqueMap.values()) };
+    } catch (e) { 
+        console.error("Error fetching pets:", e);
+        return { pets: [], error: e }; 
+    }
 };
 
-export const createPet = async (settings: SupabaseSettings, name: string, ownerId: string, accessToken?: string): Promise<Pet | null> => {
+export const createPet = async (settings: SupabaseSettings, name: string, ownerId: string, accessToken?: string): Promise<{ pet: Pet | null, error?: string }> => {
     const client = createFreshClient(settings, accessToken);
-    if (!client) return null;
-    const { data, error } = await client.from('pets').insert({ name, owner_id: ownerId }).select().single();
-    if (error) return null;
-    return data as Pet;
+    if (!client) return { pet: null, error: "Client Error" };
+    
+    // 1. Create Pet in pets table
+    const { data: pet, error } = await client.from('pets').insert({ name, owner_id: ownerId }).select().single();
+    
+    if (error) {
+        console.error("Error creating pet:", error);
+        return { pet: null, error: error.message };
+    }
+
+    if (!pet) return { pet: null, error: "Unknown error: Pet not returned" };
+
+    // 2. Auto-add owner as collaborator (Self-healing consistency for RLS)
+    // We ignore error here just in case, but it helps keep queries consistent
+    const { error: collabError } = await client.from('pet_collaborators').insert({
+        pet_id: pet.id,
+        user_id: ownerId,
+        role: 'owner',
+        permissions: { can_create: true, can_edit: 'all', can_delete: 'all', visible_types: [] }
+    });
+    
+    if (collabError) {
+        console.warn("Could not add owner as collaborator (minor issue):", collabError);
+    }
+
+    return { pet: pet as Pet };
 };
 
 export const deletePetCompletely = async (settings: SupabaseSettings, petId: string, accessToken?: string): Promise<boolean> => {

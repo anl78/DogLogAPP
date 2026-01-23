@@ -1,7 +1,4 @@
 
-
-
-
 import React, { useState, useRef, useEffect } from 'react';
 import { SupabaseSettings, Pet } from '../types';
 import { startMigration, deleteMigratedEvents, assignOrphanEvents, optimizeExistingPhotos, batchScorePoops } from '../services/migrationService';
@@ -66,7 +63,7 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings, curre
 
         if (type === 'migration') initialLog = ["🚀 Inicializando migración...", `📅 Filtro: ${startDate || 'Inicio'} a ${endDate || 'Fin'}`];
         else if (type === 'deletion') initialLog = ["🗑️ Inicializando borrado...", `📅 Filtro: ${startDate || 'Inicio'} a ${endDate || 'Fin'}`];
-        else if (type === 'rescue') initialLog = ["🛟 Rescatando huérfanos..."];
+        else if (type === 'rescue') initialLog = ["🛟 Rescatando huérfanos...", "NOTA: Esto solo funciona si RLS está deshabilitado temporalmente."];
         else if (type === 'optimization') initialLog = ["⚡ Iniciando optimización de imágenes...", "Esto puede tardar unos minutos."];
         else if (type === 'scoring') initialLog = ["💩 Iniciando IA para puntuar cacas antiguas...", "Esto consumirá tokens de IA."];
         
@@ -281,7 +278,9 @@ const MigrationPanel: React.FC<MigrationPanelProps> = ({ supabaseSettings, curre
                 {status === 'confirming_rescue' && (
                     <div className="bg-teal-50 p-3 rounded-lg border border-teal-100">
                         <p className="text-xs font-bold text-teal-900 mb-2">
-                            ¿Asignar todos los eventos sin dueño a {currentPet?.name}?
+                            Esto asignará TODOS los eventos sin dueño (huérfanos) a {currentPet?.name}. 
+                            <br/><br/>
+                            <span className="text-red-600">IMPORTANTE:</span> Debes haber desactivado RLS en Supabase primero, o no se encontrarán los registros.
                         </p>
                         <div className="flex gap-2">
                             <button type="button" onClick={() => setStatus('idle')} className="flex-1 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg text-xs font-bold">Cancelar</button>

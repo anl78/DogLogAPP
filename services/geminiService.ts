@@ -1,8 +1,12 @@
-import { GoogleGenAI, Type } from "@google/genai";
+
+import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { AIAnalysisResult, HealthStatus, RecordType, SupabaseSettings, DogEvent, ChatMessage } from "../types";
 
-// Siempre usar gemini-3-flash-preview para tareas de texto básico y multimodales
-const MODEL_NAME = 'gemini-3-flash-preview';
+// ESTRATEGIA DE MODELOS:
+// 1. Primary: El más inteligente (pero inestable/rate-limited en Preview).
+// 2. Fallback: El más robusto, rápido y barato (para cuando el 1 falla).
+const MODEL_PRIMARY = 'gemini-3-flash-preview';
+const MODEL_FALLBACK = 'gemini-2.5-flash';
 
 const SYSTEM_INSTRUCTION = `
 Eres un asistente veterinario experto. Tu tarea es analizar imágenes, audios o textos de un dueño de perro.
@@ -46,6 +50,40 @@ const getAIClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
+// --- HELPER DE RESCATE (FALLBACK LOGIC) ---
+const generateWithFallback = async (ai: GoogleGenAI, contents: any, config: any): Promise<GenerateContentResponse> => {
+    // INTENTO 1: Modelo Primario (Gemini 3.0)
+    try {
+        return await ai.models.generateContent({
+            model: MODEL_PRIMARY,
+            contents,
+            config
+        });
+    } catch (primaryError: any) {
+        console.warn(`⚠️ [IA] Falló ${MODEL_PRIMARY}. Causa: ${primaryError.message}. Iniciando rescate...`);
+
+        // INTENTO 2: Modelo Fallback (Gemini 2.5 - Estable)
+        try {
+            return await ai.models.generateContent({
+                model: MODEL_FALLBACK,
+                contents,
+                config
+            });
+        } catch (fallbackError: any) {
+            console.warn(`⚠️ [IA] Falló ${MODEL_FALLBACK}. Reintentando en 2s...`);
+            
+            // INTENTO 3: Reintento rápido del Fallback (espera 2s)
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            return await ai.models.generateContent({
+                model: MODEL_FALLBACK,
+                contents,
+                config
+            });
+        }
+    }
+};
+
 // Esquema común para todas las respuestas de análisis
 const ANALYSIS_SCHEMA = {
   type: Type.OBJECT,
@@ -75,22 +113,22 @@ export const analyzeInput = async (
     ? `METADATOS_FOTO: ${textInput}`
     : `INSTRUCCIÓN: ${textInput}\nFECHA_ACTUAL: ${now.toLocaleString('es-ES')}`;
 
-  const response = await ai.models.generateContent({
-    model: MODEL_NAME,
-    contents: [{
+  const contents = [{
       parts: [
         { text: promptText },
         ...imageParts.map(data => ({
           inlineData: { mimeType: 'image/jpeg', data: data.split(',')[1] || data }
         }))
       ]
-    }],
-    config: {
+  }];
+
+  const config = {
       systemInstruction: SYSTEM_INSTRUCTION,
       responseMimeType: "application/json",
       responseSchema: ANALYSIS_SCHEMA
-    }
-  });
+  };
+
+  const response = await generateWithFallback(ai, contents, config);
 
   if (!response.text) throw new Error("La IA no devolvió contenido.");
   return JSON.parse(response.text);
@@ -103,44 +141,48 @@ export const analyzeImage = async (imageBase64: string, settings: SupabaseSettin
 export const analyzeAudio = async (audioBase64: string, settings: SupabaseSettings, accessToken?: string): Promise<AIAnalysisResult> => {
     const ai = getAIClient();
     const now = new Date();
-    const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: [
+    
+    const contents = [
         {
           parts: [
             { inlineData: { mimeType: "audio/mp3", data: audioBase64 } },
             { text: `Hoy es ${now.toLocaleString('es-ES')}. Transcribe este audio y extrae los datos del evento del perro siguiendo las reglas de clasificación.` }
           ]
         }
-      ],
-      config: {
+    ];
+
+    const config = {
         systemInstruction: SYSTEM_INSTRUCTION,
         responseMimeType: "application/json",
         responseSchema: ANALYSIS_SCHEMA
-      }
-    });
+    };
+
+    const response = await generateWithFallback(ai, contents, config);
+    
     if (!response.text) throw new Error("Audio vacío.");
     return JSON.parse(response.text);
 };
 
 export const analyzeFile = async (base64Data: string, mimeType: string, settings: SupabaseSettings, accessToken?: string): Promise<AIAnalysisResult> => {
     const ai = getAIClient();
-    const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: [
+    
+    const contents = [
         {
           parts: [
             { inlineData: { mimeType, data: base64Data.split(',')[1] || base64Data } },
             { text: "Analiza este documento veterinario." }
           ]
         }
-      ],
-      config: {
+    ];
+
+    const config = {
         systemInstruction: SYSTEM_INSTRUCTION,
         responseMimeType: "application/json",
         responseSchema: ANALYSIS_SCHEMA
-      }
-    });
+    };
+
+    const response = await generateWithFallback(ai, contents, config);
+    
     if (!response.text) throw new Error("Archivo vacío.");
     return JSON.parse(response.text);
 };
@@ -152,11 +194,9 @@ export const consultAssistant = async (history: ChatMessage[], settings: Supabas
         parts: [{ text: msg.text }]
     }));
 
-    const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents,
-      config: { systemInstruction: CONSULTANT_INSTRUCTION }
-    });
+    const config = { systemInstruction: CONSULTANT_INSTRUCTION };
+
+    const response = await generateWithFallback(ai, contents, config);
 
     return { text: response.text || "No tengo respuesta." };
 };
@@ -171,10 +211,8 @@ export const detectTaskFromNote = async (
   const prompt = `Nota: "${text}". Usuarios: ${JSON.stringify(mentionedUsers)}. ¿Es tarea? Responde JSON {isTask, title, assignedToId}`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: [{ parts: [{ text: prompt }] }],
-      config: {
+    const contents = [{ parts: [{ text: prompt }] }];
+    const config = {
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -185,8 +223,10 @@ export const detectTaskFromNote = async (
           },
           required: ["isTask"]
         }
-      }
-    });
+    };
+
+    // We also use fallback here to ensure tasks are created even if 3.0 is busy
+    const response = await generateWithFallback(ai, contents, config);
 
     const result = JSON.parse(response.text || '{}');
     if (result.isTask && result.title) {
