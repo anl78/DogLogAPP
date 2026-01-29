@@ -380,6 +380,63 @@ const App: React.FC = () => {
                         <h1 className="text-2xl font-bold text-slate-800">{currentPet?.name || 'DogLog 🐾'}</h1>
                         <button onClick={() => setShowFilters(!showFilters)} className={`p-2 rounded-full ${showFilters ? 'bg-blue-100 text-blue-600' : 'bg-slate-100'}`}><Icons.Filter className="w-5 h-5"/></button>
                     </header>
+                    
+                    {showFilters && (
+                        <div className="bg-white px-6 py-4 border-b border-slate-100 shadow-sm animate-fade-in-down z-0">
+                            <div className="grid grid-cols-2 gap-3 mb-3">
+                                <div>
+                                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Tipo</label>
+                                    <select 
+                                        value={filterConfig.recordType} 
+                                        onChange={(e) => setFilterConfig(prev => ({...prev, recordType: e.target.value as RecordType | ''}))}
+                                        className="w-full p-2 rounded-lg border border-slate-200 text-sm bg-slate-50 outline-none focus:border-blue-500 transition-colors"
+                                    >
+                                        <option value="">Todos</option>
+                                        {Object.values(RecordType).map(t => <option key={t} value={t}>{t}</option>)}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Búsqueda</label>
+                                    <input 
+                                        type="text" 
+                                        placeholder="Título..." 
+                                        value={filterConfig.searchTitle}
+                                        onChange={(e) => setFilterConfig(prev => ({...prev, searchTitle: e.target.value}))}
+                                        className="w-full p-2 rounded-lg border border-slate-200 text-sm bg-slate-50 outline-none focus:border-blue-500 transition-colors"
+                                    />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3 mb-3">
+                                <div>
+                                     <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Desde</label>
+                                     <input 
+                                        type="date" 
+                                        value={filterConfig.startDate} 
+                                        onChange={(e) => setFilterConfig(prev => ({...prev, startDate: e.target.value}))}
+                                        className="w-full p-2 rounded-lg border border-slate-200 text-sm bg-slate-50 outline-none focus:border-blue-500 transition-colors"
+                                     />
+                                </div>
+                                <div>
+                                     <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Hasta</label>
+                                     <input 
+                                        type="date" 
+                                        value={filterConfig.endDate} 
+                                        onChange={(e) => setFilterConfig(prev => ({...prev, endDate: e.target.value}))}
+                                        className="w-full p-2 rounded-lg border border-slate-200 text-sm bg-slate-50 outline-none focus:border-blue-500 transition-colors"
+                                     />
+                                </div>
+                            </div>
+                            <button 
+                                onClick={() => {
+                                    setFilterConfig({ startDate: '', endDate: '', recordType: '', searchTitle: '' });
+                                }}
+                                className="w-full py-2 text-xs text-red-500 hover:text-red-700 font-bold bg-red-50 rounded-lg"
+                            >
+                                Limpiar Filtros
+                            </button>
+                        </div>
+                    )}
+
                     <div className="flex-1 overflow-y-auto p-4 pb-28 space-y-4 no-scrollbar">
                         {events.map(ev => {
                             const eventPhoto = ev.photoUrl || ev.photoBase64;
