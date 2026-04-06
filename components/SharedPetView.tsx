@@ -182,7 +182,7 @@ const SharedPetView: React.FC<SharedPetViewProps> = ({ token, settings }) => {
             )}
 
             {selectedImage && (
-                <ImageViewer imageUrl={selectedImage} onClose={() => setSelectedImage(null)} />
+                <ImageViewer src={selectedImage} onClose={() => setSelectedImage(null)} />
             )}
         </div>
     );

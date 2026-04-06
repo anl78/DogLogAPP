@@ -168,7 +168,7 @@ const SharedDailyLogView: React.FC<SharedDailyLogViewProps> = ({ events }) => {
                     })}
                 </div>
             )}
-            {viewImage && <ImageViewer imageUrl={viewImage} onClose={() => setViewImage(null)} />}
+            {viewImage && <ImageViewer src={viewImage} onClose={() => setViewImage(null)} />}
         </div>
     );
 };
