@@ -101,6 +101,14 @@ export interface DogEvent {
   synced: boolean;
 }
 
+export interface SharedLink {
+  id: string;
+  pet_id: string;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+}
+
 // --- BOARD / NOTES ---
 export interface PetNote {
     id: string;

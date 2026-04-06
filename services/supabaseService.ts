@@ -348,3 +348,70 @@ export const getWeightHistory = async (settings: SupabaseSettings, petId: string
     const { data } = await client.from('events').select('date, weight').eq('pet_id', petId).not('weight', 'is', null).gte('date', d.toISOString().split('T')[0]).order('date', { ascending: true });
     return (data || []).map((row: any) => ({ date: row.date, weight: Number(row.weight) }));
 };
+
+// --- SHARED LINKS ---
+
+export const createSharedLink = async (settings: SupabaseSettings, petId: string, expiresInDays: number, userId: string, accessToken?: string): Promise<{ linkId?: string, error?: string }> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return { error: "Client error" };
+    
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + expiresInDays);
+    
+    const { data, error } = await client.from('shared_links').insert({
+        pet_id: petId,
+        created_by: userId,
+        expires_at: expiresAt.toISOString()
+    }).select('id').single();
+    
+    if (error) return { error: error.message };
+    return { linkId: data.id };
+};
+
+export const getSharedLinks = async (settings: SupabaseSettings, petId: string, accessToken?: string): Promise<any[]> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return [];
+    const { data, error } = await client.from('shared_links').select('*').eq('pet_id', petId).order('created_at', { ascending: false });
+    if (error) return [];
+    return data;
+};
+
+export const revokeSharedLink = async (settings: SupabaseSettings, linkId: string, accessToken?: string): Promise<boolean> => {
+    const client = createFreshClient(settings, accessToken);
+    if (!client) return false;
+    const { error } = await client.from('shared_links').delete().eq('id', linkId);
+    return !error;
+};
+
+export const getSharedPetData = async (settings: SupabaseSettings, token: string): Promise<{ pet?: Pet, events?: DogEvent[], error?: string }> => {
+    const client = createFreshClient(settings); // No access token needed
+    if (!client) return { error: "Client error" };
+    
+    const { data, error } = await client.rpc('get_shared_pet_data', { p_token: token });
+    
+    if (error) {
+        return { error: error.message };
+    }
+    
+    if (!data || !data.pet) {
+        return { error: "Datos no encontrados" };
+    }
+    
+    const events = (data.events || []).map((row: any) => ({
+        id: row.id,
+        title: row.title,
+        recordType: row.record_type as RecordType,
+        date: row.date,
+        time: row.time ? row.time.substring(0, 5) : '',
+        healthStatus: row.health_status,
+        weight: row.weight,
+        description: row.description,
+        photoUrl: row.photo_url,
+        petId: row.pet_id,
+        userId: row.user_id,
+        poopScore: row.poop_score,
+        synced: true
+    }));
+    
+    return { pet: data.pet as Pet, events };
+};

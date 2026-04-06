@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState } from 'react';
-import { CollaboratorPermissions, Pet, PetCollaborator, RecordType, SupabaseSettings } from '../types';
-import { getCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorPermissions } from '../services/supabaseService';
+import { CollaboratorPermissions, Pet, PetCollaborator, RecordType, SupabaseSettings, SharedLink } from '../types';
+import { getCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorPermissions, createSharedLink, getSharedLinks, revokeSharedLink } from '../services/supabaseService';
 import { Icons } from '../constants';
 
 interface TeamManagerProps {
@@ -20,9 +20,13 @@ const DEFAULT_PERMISSIONS: CollaboratorPermissions = {
 
 const TeamManager: React.FC<TeamManagerProps> = ({ settings, currentPet, currentUserId, accessToken }) => {
     const [members, setMembers] = useState<PetCollaborator[]>([]);
+    const [sharedLinks, setSharedLinks] = useState<SharedLink[]>([]);
     const [loading, setLoading] = useState(true);
+    const [loadingLinks, setLoadingLinks] = useState(true);
     const [inviteEmail, setInviteEmail] = useState('');
     const [inviting, setInviting] = useState(false);
+    const [generatingLink, setGeneratingLink] = useState(false);
+    const [linkExpiration, setLinkExpiration] = useState<number>(7);
     
     // Edit Modal State
     const [editingMember, setEditingMember] = useState<PetCollaborator | null>(null);
@@ -31,6 +35,7 @@ const TeamManager: React.FC<TeamManagerProps> = ({ settings, currentPet, current
 
     useEffect(() => {
         loadMembers();
+        loadSharedLinks();
     }, [currentPet]);
 
     const loadMembers = async () => {
@@ -38,6 +43,13 @@ const TeamManager: React.FC<TeamManagerProps> = ({ settings, currentPet, current
         const data = await getCollaborators(settings, currentPet.id, accessToken);
         setMembers(data);
         setLoading(false);
+    };
+
+    const loadSharedLinks = async () => {
+        setLoadingLinks(true);
+        const links = await getSharedLinks(settings, currentPet.id, accessToken);
+        setSharedLinks(links);
+        setLoadingLinks(false);
     };
 
     const isOwner = currentPet.owner_id === currentUserId;
@@ -57,6 +69,37 @@ const TeamManager: React.FC<TeamManagerProps> = ({ settings, currentPet, current
             alert(result.error);
         }
         setInviting(false);
+    };
+
+    const handleGenerateLink = async () => {
+        setGeneratingLink(true);
+        const result = await createSharedLink(settings, currentPet.id, linkExpiration, currentUserId, accessToken);
+        if (result.error) {
+            alert("Error al generar enlace: " + result.error);
+        } else {
+            loadSharedLinks();
+        }
+        setGeneratingLink(false);
+    };
+
+    const handleRevokeLink = async (linkId: string) => {
+        if (!window.confirm("¿Seguro que quieres revocar este enlace? Ya no funcionará.")) return;
+        const success = await revokeSharedLink(settings, linkId, accessToken);
+        if (success) {
+            loadSharedLinks();
+        } else {
+            alert("Error al revocar el enlace.");
+        }
+    };
+
+    const copyToClipboard = (token: string) => {
+        let origin = window.location.origin;
+        // Fix for AI Studio dev environment: ais-dev is private, ais-pre is public
+        if (origin.includes('ais-dev-')) {
+            origin = origin.replace('ais-dev-', 'ais-pre-');
+        }
+        const url = `${origin}${window.location.pathname}?share=${token}`;
+        navigator.clipboard.writeText(url).then(() => alert("Enlace copiado al portapapeles"));
     };
 
     const handleRemove = async (userId: string) => {
@@ -174,7 +217,7 @@ const TeamManager: React.FC<TeamManagerProps> = ({ settings, currentPet, current
 
             {/* Invite Form (Only Owner) */}
             {isOwner && (
-                <form onSubmit={handleInvite} className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                <form onSubmit={handleInvite} className="bg-slate-50 p-4 rounded-xl border border-slate-200 mb-6">
                     <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Añadir miembro al equipo de cuidado</label>
                     <div className="flex gap-2">
                         <input 
@@ -198,6 +241,83 @@ const TeamManager: React.FC<TeamManagerProps> = ({ settings, currentPet, current
                     </p>
                 </form>
             )}
+
+            {/* Shared Links Section */}
+            <div className="mt-8 border-t border-slate-100 pt-6">
+                <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2">
+                    🔗 Enlaces para Veterinarios
+                </h3>
+                <p className="text-xs text-slate-500 mb-4">
+                    Crea enlaces de solo lectura para compartir el historial de la mascota sin necesidad de registro.
+                </p>
+
+                {/* Generate Link */}
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 mb-4">
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Generar Nuevo Enlace</label>
+                    <div className="flex gap-2">
+                        <select 
+                            value={linkExpiration} 
+                            onChange={e => setLinkExpiration(Number(e.target.value))}
+                            className="flex-1 p-2 rounded-lg border border-slate-200 text-sm bg-white"
+                        >
+                            <option value={7}>Caduca en 1 semana</option>
+                            <option value={30}>Caduca en 1 mes</option>
+                            <option value={180}>Caduca en 6 meses</option>
+                            <option value={365}>Caduca en 1 año</option>
+                        </select>
+                        <button 
+                            onClick={handleGenerateLink}
+                            disabled={generatingLink}
+                            className="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold disabled:opacity-50 whitespace-nowrap"
+                        >
+                            {generatingLink ? '...' : 'Crear Enlace'}
+                        </button>
+                    </div>
+                </div>
+
+                {/* Active Links List */}
+                <div className="space-y-3">
+                    {loadingLinks ? (
+                        <p className="text-sm text-slate-400">Cargando enlaces...</p>
+                    ) : sharedLinks.length === 0 ? (
+                        <p className="text-sm text-slate-400 italic">No hay enlaces activos.</p>
+                    ) : (
+                        sharedLinks.map(link => {
+                            const isExpired = new Date(link.expires_at) < new Date();
+                            return (
+                                <div key={link.id} className={`bg-white p-3 rounded-xl border ${isExpired ? 'border-red-200 opacity-75' : 'border-slate-200'} shadow-sm flex items-center justify-between`}>
+                                    <div className="flex-1 overflow-hidden pr-2">
+                                        <p className="text-xs font-mono text-slate-600 truncate mb-1">
+                                            .../?share={link.id.substring(0, 8)}...
+                                        </p>
+                                        <p className={`text-[10px] font-bold ${isExpired ? 'text-red-500' : 'text-slate-500'}`}>
+                                            {isExpired ? 'Caducado' : `Caduca: ${new Date(link.expires_at).toLocaleDateString()}`}
+                                        </p>
+                                    </div>
+                                    <div className="flex gap-2 shrink-0">
+                                        {!isExpired && (
+                                            <button 
+                                                onClick={() => copyToClipboard(link.id)}
+                                                className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"
+                                                title="Copiar enlace"
+                                            >
+                                                <Icons.Copy className="w-4 h-4" />
+                                            </button>
+                                        )}
+                                        <button 
+                                            onClick={() => handleRevokeLink(link.id)}
+                                            className="p-2 text-red-500 hover:bg-red-50 rounded-lg"
+                                            title="Revocar enlace"
+                                        >
+                                            <Icons.Trash className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                </div>
+                            );
+                        })
+                    )}
+                </div>
+            </div>
 
             {/* PERMISSIONS MODAL */}
             {editingMember && (

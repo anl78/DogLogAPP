@@ -18,6 +18,7 @@ import StatsView from './components/StatsView';
 import DashboardView from './components/DashboardView';
 import Auth from './components/Auth';
 import ImageViewer from './components/ImageViewer';
+import SharedPetView from './components/SharedPetView';
 
 const PAGE_SIZE = 25;
 const DEFAULT_OWNER_PERMISSIONS: CollaboratorPermissions = { can_create: true, can_edit: 'all', can_delete: 'all', visible_types: [] };
@@ -129,7 +130,17 @@ const App: React.FC = () => {
   const [petCollabs, setPetCollabs] = useState<any[]>([]);
   const [newPetName, setNewPetName] = useState('');
 
+  // Shared Link State
+  const [sharedToken, setSharedToken] = useState<string | null>(null);
+
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const shareToken = params.get('share');
+    if (shareToken) {
+      setSharedToken(shareToken);
+      return; // Skip normal initialization
+    }
+
     const client = createClient(settings.supabaseUrl, settings.supabaseKey);
     client.auth.getSession().then(({ data: { session } }) => { setSession(session); if (!session) setAuthLoading(false); });
     const { data: { subscription } } = client.auth.onAuthStateChange((_event, session) => { setSession(session); if (!session) { setPets([]); setCurrentPet(null); setEvents([]); } });
@@ -137,7 +148,7 @@ const App: React.FC = () => {
   }, [settings]);
 
   useEffect(() => {
-    if (session) {
+    if (session && !sharedToken) {
       getUserPets(settings, session.access_token).then(res => { 
         if (res.error) {
             console.error("Critical DB Error:", res.error);
@@ -368,6 +379,10 @@ const App: React.FC = () => {
         </div>
     </div>
   );
+
+  if (sharedToken) {
+      return <SharedPetView token={sharedToken} settings={settings} />;
+  }
 
   return (
     <>
