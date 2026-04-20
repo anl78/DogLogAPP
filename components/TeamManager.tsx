@@ -84,22 +84,21 @@ const TeamManager: React.FC<TeamManagerProps> = ({ settings, currentPet, current
 
     const handleRevokeLink = async (linkId: string) => {
         if (!window.confirm("¿Seguro que quieres revocar este enlace? Ya no funcionará.")) return;
-        const success = await revokeSharedLink(settings, linkId, accessToken);
-        if (success) {
+        const res = await revokeSharedLink(settings, linkId, accessToken);
+        if (res.success) {
             loadSharedLinks();
         } else {
-            alert("Error al revocar el enlace.");
+            alert("Error al revocar el enlace: " + res.error);
         }
     };
 
     const copyToClipboard = (token: string) => {
-        let origin = window.location.origin;
-        // Fix for AI Studio dev environment: ais-dev is private, ais-pre is public
-        if (origin.includes('ais-dev-')) {
-            origin = origin.replace('ais-dev-', 'ais-pre-');
-        }
+        const origin = window.location.origin;
+        // Se ha quitado el reemplazo forzado de ais-dev a ais-pre para evitar que
+        // el usuario choque con el proxy de Google AI Studio, permitiendo usar el
+        // enlace público real que tenga desplegado
         const url = `${origin}${window.location.pathname}?share=${token}`;
-        navigator.clipboard.writeText(url).then(() => alert("Enlace copiado al portapapeles"));
+        navigator.clipboard.writeText(url).then(() => alert("Enlace copiado al portapapeles:\n" + url));
     };
 
     const handleRemove = async (userId: string) => {

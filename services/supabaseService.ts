@@ -376,11 +376,19 @@ export const getSharedLinks = async (settings: SupabaseSettings, petId: string, 
     return data;
 };
 
-export const revokeSharedLink = async (settings: SupabaseSettings, linkId: string, accessToken?: string): Promise<boolean> => {
+export const revokeSharedLink = async (settings: SupabaseSettings, linkId: string, accessToken?: string): Promise<{success: boolean, error?: string}> => {
     const client = createFreshClient(settings, accessToken);
-    if (!client) return false;
-    const { error } = await client.from('shared_links').delete().eq('id', linkId);
-    return !error;
+    if (!client) return {success: false, error: "Client not found"};
+    const { data, error } = await client.from('shared_links').delete().eq('id', linkId).select('id');
+    if (error) {
+        console.error("Delete error:", error);
+        return {success: false, error: error.message};
+    }
+    // If data is empty, it means RLS filtered it out or it didn't exist
+    if (!data || data.length === 0) {
+        return {success: false, error: "No se pudo borrar. Es posible que no tengas permisos (políticas RLS) o el enlace ya no exista."};
+    }
+    return {success: true};
 };
 
 export const getSharedPetData = async (settings: SupabaseSettings, token: string): Promise<{ pet?: Pet, events?: DogEvent[], error?: string }> => {
