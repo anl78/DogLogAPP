@@ -85,7 +85,7 @@ const EventForm: React.FC<EventFormProps> = ({
         img.src = event.target?.result as string;
         img.onload = () => {
           const canvas = document.createElement('canvas');
-          const MAX_WIDTH = 800; // Resize to reasonable width for mobile viewing
+          const MAX_WIDTH = 1600; // Increased width for better zoom quality
           const scaleSize = MAX_WIDTH / img.width;
           // Only resize if image is larger than MAX_WIDTH
           const finalWidth = scaleSize < 1 ? MAX_WIDTH : img.width;
@@ -100,8 +100,8 @@ const EventForm: React.FC<EventFormProps> = ({
             return;
           }
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          // Compress to JPEG with 0.7 quality
-          resolve(canvas.toDataURL('image/jpeg', 0.7)); 
+          // Compress to JPEG with high quality
+          resolve(canvas.toDataURL('image/jpeg', 0.85)); 
         };
         img.onerror = (err) => reject(err);
       };
