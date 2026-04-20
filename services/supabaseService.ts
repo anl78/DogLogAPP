@@ -415,3 +415,35 @@ export const getSharedPetData = async (settings: SupabaseSettings, token: string
     
     return { pet: data.pet as Pet, events };
 };
+
+export const getSharedPetEventsByDate = async (settings: SupabaseSettings, token: string, startDate: string, endDate: string): Promise<DogEvent[]> => {
+    const client = createFreshClient(settings);
+    if (!client) return [];
+
+    const { data, error } = await client.rpc('get_shared_pet_events_by_date', { 
+        p_token: token,
+        p_start_date: startDate,
+        p_end_date: endDate
+    });
+
+    if (error || !data) {
+        console.error("Error fetching shared events by date:", error);
+        return [];
+    }
+
+    return (data || []).map((row: any) => ({
+        id: row.id,
+        title: row.title,
+        recordType: row.record_type as RecordType,
+        date: row.date,
+        time: row.time ? row.time.substring(0, 5) : '',
+        healthStatus: row.health_status,
+        weight: row.weight,
+        description: row.description,
+        photoUrl: row.photo_url,
+        petId: row.pet_id,
+        userId: row.user_id,
+        poopScore: row.poop_score,
+        synced: true
+    }));
+};

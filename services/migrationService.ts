@@ -585,7 +585,7 @@ export const batchScorePoops = async (
 
                 // Call GenAI directly using ai.models.generateContent and preferred model
                 const response = await ai.models.generateContent({
-                    model: 'gemini-3-flash-preview',
+                    model: 'gemini-3.1-pro-preview',
                     contents: { parts },
                     config: {
                         responseMimeType: 'application/json',

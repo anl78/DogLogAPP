@@ -5,7 +5,7 @@ import { AIAnalysisResult, HealthStatus, RecordType, SupabaseSettings, DogEvent,
 // ESTRATEGIA DE MODELOS:
 // 1. Primary: El más inteligente (pero inestable/rate-limited en Preview).
 // 2. Fallback: El más robusto, rápido y barato (para cuando el 1 falla).
-const MODEL_PRIMARY = 'gemini-3-flash-preview';
+const MODEL_PRIMARY = 'gemini-3.1-pro-preview';
 const MODEL_FALLBACK = 'gemini-2.5-flash';
 
 const SYSTEM_INSTRUCTION = `

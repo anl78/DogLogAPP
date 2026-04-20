@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { DogEvent, Pet, SupabaseSettings } from '../types';
-import { getSharedPetData } from '../services/supabaseService';
+import { getSharedPetData, getSharedPetEventsByDate } from '../services/supabaseService';
 import { HEALTH_STATUS_COLORS, Icons, getPoopScoreColor } from '../constants';
 import ImageViewer from './ImageViewer';
 import SharedDailyLogView from './SharedDailyLogView';
@@ -14,10 +14,12 @@ type Tab = 'list' | 'log';
 
 const SharedPetView: React.FC<SharedPetViewProps> = ({ token, settings }) => {
     const [loading, setLoading] = useState(true);
+    const [loadingMore, setLoadingMore] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [pet, setPet] = useState<Pet | null>(null);
     const [events, setEvents] = useState<DogEvent[]>([]);
     const [activeTab, setActiveTab] = useState<Tab>('list');
+    const [oldestLoadedDate, setOldestLoadedDate] = useState<Date>(new Date());
 
     // Filters and Image Viewer state
     const [filterType, setFilterType] = useState('all');
@@ -33,11 +35,48 @@ const SharedPetView: React.FC<SharedPetViewProps> = ({ token, settings }) => {
             } else {
                 setPet(result.pet || null);
                 setEvents(result.events || []);
+                
+                // Set the oldest loaded date based on the oldest event received
+                if (result.events && result.events.length > 0) {
+                    const oldestEventDate = new Date(result.events[result.events.length - 1].date);
+                    setOldestLoadedDate(oldestEventDate);
+                } else {
+                    const startDate = new Date();
+                    startDate.setDate(startDate.getDate() - 13);
+                    setOldestLoadedDate(startDate);
+                }
             }
             setLoading(false);
         };
         loadData();
     }, [token, settings]);
+
+    const handleLoadMore = async () => {
+        if (loadingMore) return;
+        setLoadingMore(true);
+
+        const endDate = new Date(oldestLoadedDate);
+        endDate.setDate(endDate.getDate() - 1); // Start from previous day
+        
+        const startDate = new Date(endDate);
+        startDate.setDate(startDate.getDate() - 13); // Load another 14 days chunk
+
+        const newData = await getSharedPetEventsByDate(
+            settings, 
+            token,
+            startDate.toISOString().split('T')[0],
+            endDate.toISOString().split('T')[0]
+        );
+
+        setEvents(prev => {
+            // Filter out duplicates just in case
+            const existingIds = new Set(prev.map(e => e.id));
+            const uniqueNewData = newData.filter(e => !existingIds.has(e.id));
+            return [...prev, ...uniqueNewData];
+        });
+        setOldestLoadedDate(startDate);
+        setLoadingMore(false);
+    };
 
     const filteredEvents = useMemo(() => {
         return events.filter(e => {
@@ -103,7 +142,7 @@ const SharedPetView: React.FC<SharedPetViewProps> = ({ token, settings }) => {
             </header>
 
             {activeTab === 'list' ? (
-                <main className="flex-1 overflow-y-auto p-4 space-y-4 max-w-3xl mx-auto w-full">
+                <main className="flex-1 overflow-y-auto p-4 space-y-4 max-w-3xl mx-auto w-full pb-32">
                     
                     {/* Filters */}
                     <div className="flex flex-col sm:flex-row gap-3 mb-6">
@@ -140,44 +179,86 @@ const SharedPetView: React.FC<SharedPetViewProps> = ({ token, settings }) => {
                             <p>No hay eventos que coincidan con los filtros.</p>
                         </div>
                     ) : (
-                        filteredEvents.map(ev => (
-                            <div key={ev.id} className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100 flex flex-col sm:flex-row gap-4">
-                                <div className="flex-1">
-                                    <div className="flex justify-between items-start mb-2">
-                                        <div>
-                                            <h3 className="font-bold text-lg text-slate-800 leading-tight mb-1">{ev.title}</h3>
-                                            <div className="flex flex-wrap gap-2 items-center">
-                                                <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full uppercase tracking-wider">{ev.recordType}</span>
-                                                <span className="text-[10px] text-slate-400">{ev.time}</span>
+                        <div className="space-y-4">
+                            {filteredEvents.map(ev => (
+                                <div key={ev.id} className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100 flex flex-col sm:flex-row gap-4">
+                                    <div className="flex-1">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div>
+                                                <h3 className="font-bold text-lg text-slate-800 leading-tight mb-1">{ev.title}</h3>
+                                                <div className="flex flex-wrap gap-2 items-center">
+                                                    <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full uppercase tracking-wider">{ev.recordType}</span>
+                                                    <span className="text-[10px] text-slate-400">{ev.time}</span>
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
-                                    {ev.description && <p className="text-sm text-slate-600 mb-3 leading-snug whitespace-pre-wrap">{ev.description}</p>}
-                                    
-                                    <div className="flex items-center justify-between mt-4">
-                                        <div className="flex flex-wrap gap-2">
-                                            {ev.healthStatus && <span className={`text-[10px] px-2 py-0.5 rounded-md border ${HEALTH_STATUS_COLORS[ev.healthStatus]}`}>{ev.healthStatus}</span>}
-                                            {ev.weight && <span className="text-[10px] px-2 py-0.5 rounded-md border border-slate-200 bg-slate-50 text-slate-600 font-bold">{ev.weight} kg</span>}
-                                            {ev.poopScore && <span className={`text-[10px] px-2 py-0.5 rounded-md border font-bold ${getPoopScoreColor(ev.poopScore)}`}>Score: {ev.poopScore}</span>}
+                                        {ev.description && <p className="text-sm text-slate-600 mb-3 leading-snug whitespace-pre-wrap">{ev.description}</p>}
+                                        
+                                        <div className="flex items-center justify-between mt-4">
+                                            <div className="flex flex-wrap gap-2">
+                                                {ev.healthStatus && <span className={`text-[10px] px-2 py-0.5 rounded-md border ${HEALTH_STATUS_COLORS[ev.healthStatus]}`}>{ev.healthStatus}</span>}
+                                                {ev.weight && <span className="text-[10px] px-2 py-0.5 rounded-md border border-slate-200 bg-slate-50 text-slate-600 font-bold">{ev.weight} kg</span>}
+                                                {ev.poopScore && <span className={`text-[10px] px-2 py-0.5 rounded-md border font-bold ${getPoopScoreColor(ev.poopScore)}`}>Score: {ev.poopScore}</span>}
+                                            </div>
+                                            <span className="text-[10px] font-bold text-slate-400">{ev.date}</span>
                                         </div>
-                                        <span className="text-[10px] font-bold text-slate-400">{ev.date}</span>
                                     </div>
+                                    {ev.photoUrl && (
+                                        <div 
+                                            className="w-full sm:w-32 h-32 sm:h-auto shrink-0 overflow-hidden bg-slate-100 rounded-xl cursor-pointer"
+                                            onClick={() => setSelectedImage(ev.photoUrl!)}
+                                        >
+                                            <img src={ev.photoUrl} alt={ev.title} className="w-full h-full object-cover hover:scale-105 transition-transform" />
+                                        </div>
+                                    )}
                                 </div>
-                                {ev.photoUrl && (
-                                    <div 
-                                        className="w-full sm:w-32 h-32 sm:h-auto shrink-0 overflow-hidden bg-slate-100 rounded-xl cursor-pointer"
-                                        onClick={() => setSelectedImage(ev.photoUrl!)}
-                                    >
-                                        <img src={ev.photoUrl} alt={ev.title} className="w-full h-full object-cover hover:scale-105 transition-transform" />
-                                    </div>
+                            ))}
+                            
+                            {/* Load More Button */}
+                            <button 
+                                onClick={handleLoadMore} 
+                                disabled={loadingMore}
+                                className="w-full py-4 mt-6 bg-white border border-slate-200 rounded-xl text-slate-600 font-bold shadow-sm active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2"
+                            >
+                                {loadingMore ? (
+                                    <>
+                                        <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></div>
+                                        Cargando...
+                                    </>
+                                ) : (
+                                    <>
+                                        <Icons.Plus className="w-4 h-4" />
+                                        Cargar 14 días anteriores
+                                    </>
                                 )}
-                            </div>
-                        ))
+                            </button>
+                        </div>
                     )}
                 </main>
             ) : (
-                <div className="flex-1 overflow-hidden flex flex-col max-w-5xl mx-auto w-full">
+                <div className="flex-1 overflow-hidden flex flex-col max-w-5xl mx-auto w-full relative">
                     <SharedDailyLogView events={filteredEvents} />
+                    
+                    {/* Load More Button for Log View */}
+                    <div className="absolute bottom-4 left-4 right-4 bg-white/80 backdrop-blur-sm p-4 rounded-2xl border border-slate-200 shadow-lg">
+                        <button 
+                            onClick={handleLoadMore} 
+                            disabled={loadingMore}
+                            className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold shadow-sm active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2"
+                        >
+                            {loadingMore ? (
+                                <>
+                                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                                    Cargando...
+                                </>
+                            ) : (
+                                <>
+                                    <Icons.Plus className="w-4 h-4" />
+                                    Cargar 14 días anteriores
+                                </>
+                            )}
+                        </button>
+                    </div>
                 </div>
             )}
 

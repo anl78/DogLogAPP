@@ -63,3 +63,38 @@ BEGIN
     );
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 4. Función RPC para obtener eventos de la mascota compartida por rango de fechas
+CREATE OR REPLACE FUNCTION get_shared_pet_events_by_date(p_token uuid, p_start_date date, p_end_date date)
+RETURNS json AS $$
+DECLARE
+    v_pet_id uuid;
+    v_expires_at timestamptz;
+    v_events_data json;
+BEGIN
+    -- Verificar validez del token
+    SELECT pet_id, expires_at INTO v_pet_id, v_expires_at
+    FROM public.shared_links
+    WHERE id = p_token;
+
+    IF v_pet_id IS NULL THEN
+        RAISE EXCEPTION 'Enlace no válido o no encontrado';
+    END IF;
+
+    IF v_expires_at < now() THEN
+        RAISE EXCEPTION 'Este enlace ha caducado';
+    END IF;
+
+    -- Obtener eventos
+    SELECT json_agg(row_to_json(e)) INTO v_events_data
+    FROM (
+        SELECT * FROM public.events
+        WHERE pet_id = v_pet_id
+          AND date >= p_start_date
+          AND date <= p_end_date
+        ORDER BY date DESC, time DESC
+    ) e;
+
+    RETURN COALESCE(v_events_data, '[]'::json);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
