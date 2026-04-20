@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface ImageViewerProps {
   src: string | null;
@@ -6,19 +6,49 @@ interface ImageViewerProps {
 }
 
 const ImageViewer: React.FC<ImageViewerProps> = ({ src, onClose }) => {
+  // 0: Fit screen
+  // 1: Zoom In (1.5x screen width)
+  // 2: Max Zoom (2.5x screen width)
+  const [zoomLevel, setZoomLevel] = useState<0 | 1 | 2>(0);
+
   if (!src) return null;
+
+  const handleImageClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setZoomLevel(prev => (prev === 0 ? 1 : prev === 1 ? 2 : 0));
+  };
+
+  const isZoomed = zoomLevel > 0;
+
+  let imgStyles: React.CSSProperties = {};
+  let imgClasses = 'shadow-2xl transition-all duration-300 ease-in-out ';
+
+  if (zoomLevel === 0) {
+    imgClasses += 'cursor-zoom-in max-w-full max-h-full object-contain rounded-lg';
+  } else if (zoomLevel === 1) {
+    imgClasses += 'cursor-zoom-in rounded-lg';
+    imgStyles = { width: '150vw', maxWidth: 'none', height: 'auto' };
+  } else if (zoomLevel === 2) {
+    imgClasses += 'cursor-zoom-out rounded-lg';
+    imgStyles = { width: '250vw', maxWidth: 'none', height: 'auto' };
+  }
 
   return (
     <div 
-      className="fixed inset-0 z-[100] bg-black/90 flex items-center justify-center p-4 animate-fade-in"
+      className={`fixed inset-0 z-[100] bg-black/90 animate-fade-in ${
+        isZoomed ? 'overflow-auto' : 'overflow-hidden flex items-center justify-center p-4'
+      }`}
       onClick={onClose}
       role="dialog"
       aria-modal="true"
     >
       {/* Close Button */}
       <button 
-        onClick={onClose}
-        className="absolute top-4 right-4 p-2 bg-black/50 text-white rounded-full hover:bg-white/20 transition-colors"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        className="fixed top-4 right-4 p-2 bg-black/50 text-white rounded-full hover:bg-white/20 transition-colors z-[110]"
       >
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -26,13 +56,19 @@ const ImageViewer: React.FC<ImageViewerProps> = ({ src, onClose }) => {
         </svg>
       </button>
 
-      {/* Image */}
-      <img 
-        src={src} 
-        alt="Vista completa" 
-        className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-        onClick={(e) => e.stopPropagation()} // Prevent closing when clicking image
-      />
+      {/* Image Container */}
+      <div 
+        className={isZoomed ? "min-h-full min-w-full w-max h-max p-4 flex items-center justify-center m-auto" : "h-full w-full flex items-center justify-center"}
+        onClick={onClose}
+      >
+        <img 
+          src={src} 
+          alt="Vista completa" 
+          className={imgClasses}
+          style={imgStyles}
+          onClick={handleImageClick}
+        />
+      </div>
     </div>
   );
 };
