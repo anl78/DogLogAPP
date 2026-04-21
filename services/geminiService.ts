@@ -5,7 +5,7 @@ import { AIAnalysisResult, HealthStatus, RecordType, SupabaseSettings, DogEvent,
 // ESTRATEGIA DE MODELOS:
 // 1. Primary: El más inteligente (pero inestable/rate-limited en Preview).
 // 2. Fallback: El más robusto, rápido y barato (para cuando el 1 falla).
-const MODEL_PRIMARY = 'gemini-3.1-pro-preview';
+const MODEL_PRIMARY = 'gemini-2.5-pro'; // Cambio temporal a 2.5 Pro que es más estable
 const MODEL_FALLBACK = 'gemini-2.5-flash';
 
 const SYSTEM_INSTRUCTION = `
@@ -52,7 +52,7 @@ const getAIClient = () => {
 
 // --- HELPER DE RESCATE (FALLBACK LOGIC) ---
 const generateWithFallback = async (ai: GoogleGenAI, contents: any, config: any): Promise<GenerateContentResponse> => {
-    // INTENTO 1: Modelo Primario (Gemini 3.0)
+    // INTENTO 1: Modelo Primario
     try {
         return await ai.models.generateContent({
             model: MODEL_PRIMARY,
@@ -60,7 +60,7 @@ const generateWithFallback = async (ai: GoogleGenAI, contents: any, config: any)
             config
         });
     } catch (primaryError: any) {
-        console.warn(`⚠️ [IA] Falló ${MODEL_PRIMARY}. Causa: ${primaryError.message}. Iniciando rescate...`);
+        console.warn(`⚠️ [IA] Falló ${MODEL_PRIMARY}. Causa: ${primaryError.message}. Iniciando rescate con ${MODEL_FALLBACK}...`);
 
         // INTENTO 2: Modelo Fallback (Gemini 2.5 - Estable)
         try {
@@ -70,16 +70,21 @@ const generateWithFallback = async (ai: GoogleGenAI, contents: any, config: any)
                 config
             });
         } catch (fallbackError: any) {
-            console.warn(`⚠️ [IA] Falló ${MODEL_FALLBACK}. Reintentando en 2s...`);
+            console.warn(`⚠️ [IA] Falló ${MODEL_FALLBACK}. Causa: ${fallbackError.message}. Reintentando en 2s...`);
             
             // INTENTO 3: Reintento rápido del Fallback (espera 2s)
             await new Promise(resolve => setTimeout(resolve, 2000));
             
-            return await ai.models.generateContent({
-                model: MODEL_FALLBACK,
-                contents,
-                config
-            });
+            try {
+                 return await ai.models.generateContent({
+                    model: MODEL_FALLBACK,
+                    contents,
+                    config
+                });
+            } catch (finalError: any) {
+                console.error("❌ Fallo total de IA:", finalError);
+                throw new Error(`Ambos modelos fallaron. Error final: ${finalError.message}`);
+            }
         }
     }
 };
