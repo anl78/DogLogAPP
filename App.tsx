@@ -135,6 +135,8 @@ const App: React.FC = () => {
 
   // Batch Processing State
   const [batchProgress, setBatchProgress] = useState<{ total: number, current: number, logs: string[] } | null>(null);
+  const [batchReport, setBatchReport] = useState<{ created: number, skipped: number, failed: { file: File, name: string, date: string, time: string, base64?: string, error: string }[] } | null>(null);
+  const [viewingPhoto, setViewingPhoto] = useState<string | null>(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -348,15 +350,18 @@ const App: React.FC = () => {
       
       let created = 0;
       let skipped = 0;
+      const failed: { file: File, name: string, date: string, time: string, base64?: string, error: string }[] = [];
       
       // We will loop sequentially to respect rate limits
       for (let i = 0; i < files.length; i++) {
           const file = files[i];
           setBatchProgress(prev => prev ? { ...prev, current: i + 1, logs: [`Analizando imagen ${i+1}/${files.length}...`, ...prev.logs].slice(0,5) } : null);
           
+          let formattedDate = "";
+          let formattedTime = "";
+          let base64: string | undefined = undefined;
+
           try {
-              let formattedDate: string;
-              let formattedTime: string;
               try {
                   const exif = await exifr.parse(file);
                   const d = (exif && exif.DateTimeOriginal) ? new Date(exif.DateTimeOriginal) : new Date(file.lastModified);
@@ -382,7 +387,7 @@ const App: React.FC = () => {
               }
 
               const metadataHint = `FECHA=${formattedDate}, HORA=${formattedTime}. ESTA ES LA FECHA REAL DE CAPTURA. ÚSALA OBLIGATORIAMENTE.`;
-              const base64 = await resizeImageForAI(file);
+              base64 = await resizeImageForAI(file);
               
               const result = await analyzeImage(base64, settings, metadataHint, session?.access_token);
               
@@ -421,14 +426,27 @@ const App: React.FC = () => {
               
           } catch (e: any) {
               setBatchProgress(prev => prev ? { ...prev, logs: [`❌ Error en imagen ${i+1}: ${e.message}`, ...prev.logs].slice(0,5) } : null);
+              failed.push({
+                  file,
+                  name: file.name,
+                  date: formattedDate || 'Desconocida',
+                  time: formattedTime || 'Desconocida',
+                  base64,
+                  error: e.message
+              });
           }
       }
       
       setBatchProgress(null);
       setAiProcessing(false);
-      alert(`Proceso finalizado.\n✔️ ${created} creados\n⏭️ ${skipped} omitidos (duplicados)`);
-      fetchEvents(true); // reload list
-      setView('home'); // Go to home to see them
+
+      if (failed.length > 0) {
+          setBatchReport({ created, skipped, failed });
+      } else {
+          alert(`Proceso finalizado.\n✔️ ${created} creados\n⏭️ ${skipped} omitidos (duplicados)`);
+          fetchEvents(true); // reload list
+          setView('home'); // Go to home to see them
+      }
   };
 
   const handleLogout = async () => { const client = createClient(settings.supabaseUrl, settings.supabaseKey); await client.auth.signOut(); };
@@ -452,6 +470,144 @@ const App: React.FC = () => {
         const res = await deleteUserAccount(settings, session.access_token);
         if (res.success) window.location.reload(); else alert(res.error);
     } catch (e: any) { alert(e.message); } finally { setIsLoading(false); }
+  };
+
+  const handleRetryFailedBatch = async (item: { file: File, name: string, date: string, time: string, base64?: string, error: string }, index: number) => {
+    if(!session || !batchReport || !currentPet) return;
+    setAiProcessing(true);
+    let newBase64 = item.base64;
+    try {
+         const metadataHint = `FECHA=${item.date}, HORA=${item.time}. ESTA ES LA FECHA REAL DE CAPTURA. ÚSALA OBLIGATORIAMENTE.`;
+         if (!newBase64) {
+             newBase64 = await resizeImageForAI(item.file);
+         }
+         const result = await analyzeImage(newBase64, settings, metadataHint, session?.access_token);
+         
+         const newEvent: DogEvent = {
+             id: 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                const r = Math.random() * 16 | 0;
+                const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+             }),
+             title: result.title,
+             recordType: result.recordType as RecordType,
+             healthStatus: result.healthStatus as HealthStatus,
+             description: result.description,
+             weight: result.weight,
+             date: result.date || item.date,
+             time: result.time || item.time,
+             poopScore: result.poopScore,
+             photoBase64: newBase64,
+             needs_review: true,
+             petId: currentPet.id,
+             userId: session.user.id,
+             synced: false
+         };
+         await saveEventToSupabase(newEvent, settings, session.access_token);
+         
+         // Remove from failed list
+         const newFailed = [...batchReport.failed];
+         newFailed.splice(index, 1);
+         setBatchReport({ ...batchReport, created: batchReport.created + 1, failed: newFailed });
+         fetchEvents(true);
+         alert("¡Reintento exitoso! Registro guardado (Pendiente de revisión).");
+         
+         if (newFailed.length === 0) {
+             setBatchReport(null);
+             setView('home');
+         }
+    } catch(e:any) {
+         // Update base64 if it was successfully resized but failed AI
+         const newFailed = [...batchReport.failed];
+         newFailed[index].error = e.message;
+         if (newBase64) {
+             newFailed[index].base64 = newBase64;
+         }
+         setBatchReport({ ...batchReport, failed: newFailed });
+         alert("Volvió a fallar: " + e.message);
+    } finally {
+         setAiProcessing(false);
+    }
+  };
+
+  const renderBatchReportModal = () => {
+      if (!batchReport) return null;
+      return (
+          <div className="fixed inset-0 bg-slate-900/80 z-[80] flex items-center justify-center p-4 sm:p-6 animate-fade-in">
+              <div className="bg-white rounded-3xl w-full max-w-xl max-h-[90vh] shadow-2xl flex flex-col overflow-hidden">
+                  <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                      <div>
+                          <h3 className="text-xl font-bold text-slate-800">Informe del Lote</h3>
+                          <p className="text-sm text-slate-600 mt-1">
+                              <span className="text-green-600 font-bold">{batchReport.created} creados</span> · <span className="text-slate-500">{batchReport.skipped} omitidos (duplicados)</span> · <span className="text-red-500 font-bold">{batchReport.failed.length} fallidos</span>
+                          </p>
+                      </div>
+                  </div>
+                  
+                  <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+                      {batchReport.failed.length === 0 ? (
+                          <div className="text-center py-8">
+                              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-green-100 text-green-600 mb-4">
+                                  <Icons.CheckSquare className="w-8 h-8" />
+                              </div>
+                              <h4 className="text-lg font-bold text-slate-800">¡Todo procesado!</h4>
+                          </div>
+                      ) : (
+                          batchReport.failed.map((item, index) => (
+                              <div key={index} className="bg-red-50 border border-red-100 rounded-2xl p-4 flex flex-col sm:flex-row gap-4">
+                                  <div className="flex-1 min-w-0">
+                                      <h4 className="font-bold text-slate-800 truncate" title={item.name}>{item.name}</h4>
+                                      <p className="text-sm text-slate-600 flex items-center gap-2 mt-1">
+                                          <Icons.Calendar className="w-4 h-4 text-slate-400" /> {item.date} {item.time}
+                                      </p>
+                                      <p className="text-xs text-red-600 font-medium mt-2 bg-red-100 p-2 rounded-lg break-words">
+                                          {item.error}
+                                      </p>
+                                  </div>
+                                  <div className="flex sm:flex-col gap-2 shrink-0">
+                                      <button 
+                                          onClick={() => handleRetryFailedBatch(item, index)}
+                                          className="flex-1 bg-red-600 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-sm shadow-red-200 active:scale-95 transition-transform"
+                                      >
+                                          Reintentar
+                                      </button>
+                                      <button 
+                                          onClick={async () => {
+                                              if (item.base64) {
+                                                  setViewingPhoto(item.base64);
+                                              } else {
+                                                  const b64 = await resizeImageForAI(item.file);
+                                                  const newFailed = [...batchReport.failed];
+                                                  newFailed[index].base64 = b64;
+                                                  setBatchReport({...batchReport, failed: newFailed});
+                                                  setViewingPhoto(b64);
+                                              }
+                                          }}
+                                          className="flex-1 bg-white text-slate-700 border border-slate-200 px-4 py-2 rounded-xl text-sm font-medium active:scale-95 transition-transform"
+                                      >
+                                          Ver Foto
+                                      </button>
+                                  </div>
+                              </div>
+                          ))
+                      )}
+                  </div>
+                  
+                  <div className="p-4 sm:p-6 border-t border-slate-100 flex justify-end">
+                      <button 
+                          onClick={() => {
+                              setBatchReport(null);
+                              fetchEvents(true);
+                              setView('home');
+                          }}
+                          className="bg-slate-800 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-slate-200 active:scale-95 transition-transform flex-1 sm:flex-none text-center"
+                      >
+                          Cerrar y Ver Registros
+                      </button>
+                  </div>
+              </div>
+          </div>
+      );
   };
 
   const renderDeleteModal = () => (
@@ -773,7 +929,9 @@ const App: React.FC = () => {
             )}
             <Navbar currentView={view} setView={setView} hasUnread={hasUnreadMessages} />
             {fullScreenImage && <ImageViewer src={fullScreenImage} onClose={() => setFullScreenImage(null)} />}
+            {viewingPhoto && <ImageViewer src={viewingPhoto} onClose={() => setViewingPhoto(null)} />}
             {showDeleteModal && renderDeleteModal()}
+            {renderBatchReportModal()}
          </div>}
     </>
   );
