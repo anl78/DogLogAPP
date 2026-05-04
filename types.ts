@@ -98,6 +98,8 @@ export interface DogEvent {
   userId?: string; // Created by
   petId?: string; // Belongs to
   
+  needs_review?: boolean; // AI generated flag
+  
   synced: boolean;
 }
 

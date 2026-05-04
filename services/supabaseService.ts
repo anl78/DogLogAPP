@@ -307,7 +307,21 @@ export const saveEventToSupabase = async (event: DogEvent, settings: SupabaseSet
         const { data: urlData } = client.storage.from('dog_photos').getPublicUrl(fileName);
         publicPhotoUrl = urlData.publicUrl;
     }
-    const payload: any = { id: event.id, title: event.title, record_type: event.recordType, date: event.date, time: event.time.length === 5 ? event.time + ":00" : event.time, health_status: event.healthStatus || null, weight: event.weight || null, description: event.description, photo_url: publicPhotoUrl || event.photoUrl, pet_id: event.petId, user_id: event.userId, poop_score: event.poopScore || null };
+    const payload: any = { 
+        id: event.id, 
+        title: event.title, 
+        record_type: event.recordType, 
+        date: event.date, 
+        time: event.time.length === 5 ? event.time + ":00" : event.time, 
+        health_status: event.healthStatus || null, 
+        weight: event.weight || null, 
+        description: event.description, 
+        photo_url: publicPhotoUrl || event.photoUrl, 
+        pet_id: event.petId, 
+        user_id: event.userId, 
+        poop_score: event.poopScore || null,
+        needs_review: event.needs_review || false 
+    };
     const { data, error: insertError } = await client.from('events').upsert(payload).select().single();
     if (insertError) return { success: false, error: insertError.message };
     return { success: true, photoUrl: publicPhotoUrl || undefined, newId: data?.id };
@@ -338,7 +352,7 @@ export const searchEvents = async (params: EventSearchParams, settings: Supabase
     else if (params.limit) query = query.limit(params.limit);
     const { data, error } = await query;
     if (error) return [];
-    return (data || []).map((row: any) => ({ id: row.id, title: row.title, recordType: row.record_type as RecordType, date: row.date, time: row.time.substring(0, 5), healthStatus: row.health_status, weight: row.weight, description: row.description, photoUrl: row.photo_url, pet_id: row.pet_id, userId: row.user_id, poopScore: row.poop_score, synced: true }));
+    return (data || []).map((row: any) => ({ id: row.id, title: row.title, recordType: row.record_type as RecordType, date: row.date, time: row.time.substring(0, 5), healthStatus: row.health_status, weight: row.weight, description: row.description, photoUrl: row.photo_url, pet_id: row.pet_id, userId: row.user_id, poopScore: row.poop_score, needs_review: row.needs_review, synced: true }));
 };
 
 export const getWeightHistory = async (settings: SupabaseSettings, petId: string, months: number = 6, accessToken?: string): Promise<{ date: string, weight: number }[]> => {

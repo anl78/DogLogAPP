@@ -42,6 +42,7 @@ const EventForm: React.FC<EventFormProps> = ({
     photoUrl: undefined,
     fileBase64: undefined,
     poopScore: undefined,
+    needs_review: undefined,
     ...initialData
   });
   
@@ -190,6 +191,7 @@ const EventForm: React.FC<EventFormProps> = ({
                 fileName: formData.fileName,
                 userId: formData.userId, // PRESERVE OWNERSHIP
                 petId: formData.petId,   // PRESERVE CONTEXT
+                needs_review: false,     // Clear review flag when user explicitly saves from form
                 synced: false
             };
             
@@ -211,6 +213,16 @@ const EventForm: React.FC<EventFormProps> = ({
           <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg flex items-center gap-2">
               <Icons.AlertTriangle className="w-5 h-5 text-amber-600" />
               <p className="text-sm text-amber-800 font-medium">Modo solo lectura (Sin permisos de edición)</p>
+          </div>
+      )}
+
+      {formData.needs_review && canEdit && (
+          <div className="bg-orange-50 border border-orange-200 p-3 rounded-lg flex items-start gap-2 shadow-sm">
+              <Icons.Activity className="w-5 h-5 text-orange-600 mt-0.5 shrink-0" />
+              <div>
+                  <h4 className="font-bold text-orange-800 text-sm">Pendiente de revisión</h4>
+                  <p className="text-xs text-orange-700 mt-1">Este registro fue creado en bloque por la IA. Revisa que los datos y la fecha sean correctos y pulsa el botón guardar para validarlo.</p>
+              </div>
           </div>
       )}
 

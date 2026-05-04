@@ -133,6 +133,9 @@ const App: React.FC = () => {
   // Shared Link State
   const [sharedToken, setSharedToken] = useState<string | null>(null);
 
+  // Batch Processing State
+  const [batchProgress, setBatchProgress] = useState<{ total: number, current: number, logs: string[] } | null>(null);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const shareToken = params.get('share');
@@ -335,6 +338,99 @@ const App: React.FC = () => {
       }
   };
 
+  const handleBatchUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files || []);
+      if (!files.length || !currentPet || !session) return;
+      
+      setBatchProgress({ total: files.length, current: 0, logs: [] });
+      setAiProcessing(true);
+      await ensureApiKey();
+      
+      let created = 0;
+      let skipped = 0;
+      
+      // We will loop sequentially to respect rate limits
+      for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          setBatchProgress(prev => prev ? { ...prev, current: i + 1, logs: [`Analizando imagen ${i+1}/${files.length}...`, ...prev.logs].slice(0,5) } : null);
+          
+          try {
+              let formattedDate: string;
+              let formattedTime: string;
+              try {
+                  const exif = await exifr.parse(file);
+                  const d = (exif && exif.DateTimeOriginal) ? new Date(exif.DateTimeOriginal) : new Date(file.lastModified);
+                  const YYYY = d.getFullYear();
+                  const MM = String(d.getMonth() + 1).padStart(2, '0');
+                  const DD = String(d.getDate()).padStart(2, '0');
+                  const hh = String(d.getHours()).padStart(2, '0');
+                  const mm = String(d.getMinutes()).padStart(2, '0');
+                  formattedDate = `${YYYY}-${MM}-${DD}`;
+                  formattedTime = `${hh}:${mm}`;
+              } catch (exifErr) {
+                  const d = new Date(file.lastModified);
+                  formattedDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                  formattedTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+              }
+              
+              // Verify collision
+              const exists = events.some(ev => ev.date === formattedDate && ev.time === formattedTime);
+              if (exists) {
+                  skipped++;
+                  setBatchProgress(prev => prev ? { ...prev, logs: [`⚠️ Omitida: Ya existe registro en ${formattedDate} ${formattedTime}`, ...prev.logs].slice(0,5) } : null);
+                  continue; // Skip without calling AI
+              }
+
+              const metadataHint = `FECHA=${formattedDate}, HORA=${formattedTime}. ESTA ES LA FECHA REAL DE CAPTURA. ÚSALA OBLIGATORIAMENTE.`;
+              const base64 = await resizeImageForAI(file);
+              
+              const result = await analyzeImage(base64, settings, metadataHint, session?.access_token);
+              
+              // Generate UUID
+              const safeId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                  const r = Math.random() * 16 | 0;
+                  const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                  return v.toString(16);
+              });
+              
+              const newEvent: DogEvent = {
+                  id: safeId,
+                  title: result.title,
+                  recordType: result.recordType as RecordType,
+                  healthStatus: result.healthStatus as HealthStatus,
+                  description: result.description,
+                  weight: result.weight,
+                  date: result.date || formattedDate,
+                  time: result.time || formattedTime,
+                  poopScore: result.poopScore,
+                  photoBase64: base64,
+                  needs_review: true,
+                  petId: currentPet.id,
+                  userId: session.user.id,
+                  synced: false
+              };
+              
+              setBatchProgress(prev => prev ? { ...prev, logs: [`✅ Guardando ${newEvent.recordType} de las ${newEvent.time}...`, ...prev.logs].slice(0,5) } : null);
+              await saveEventToSupabase(newEvent, settings, session.access_token);
+              created++;
+              
+              // Rate limit pause between calls (unless last one)
+              if (i < files.length - 1) {
+                  await new Promise(r => setTimeout(r, 2500));
+              }
+              
+          } catch (e: any) {
+              setBatchProgress(prev => prev ? { ...prev, logs: [`❌ Error en imagen ${i+1}: ${e.message}`, ...prev.logs].slice(0,5) } : null);
+          }
+      }
+      
+      setBatchProgress(null);
+      setAiProcessing(false);
+      alert(`Proceso finalizado.\n✔️ ${created} creados\n⏭️ ${skipped} omitidos (duplicados)`);
+      fetchEvents(true); // reload list
+      setView('home'); // Go to home to see them
+  };
+
   const handleLogout = async () => { const client = createClient(settings.supabaseUrl, settings.supabaseKey); await client.auth.signOut(); };
 
   const handleAccountDeletion = async () => {
@@ -474,6 +570,9 @@ const App: React.FC = () => {
                                                     <div className="flex flex-wrap gap-2 items-center">
                                                         <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full uppercase tracking-wider">{ev.recordType}</span>
                                                         <span className="text-[10px] text-slate-400">{ev.time}</span>
+                                                        {ev.needs_review && (
+                                                            <span className="text-[9px] font-bold text-orange-600 bg-orange-100 px-1.5 py-0.5 rounded-sm uppercase tracking-wider">Por revisar (IA)</span>
+                                                        )}
                                                     </div>
                                                 </div>
                                             </div>
@@ -641,6 +740,7 @@ const App: React.FC = () => {
                              <h2 className="text-2xl font-bold text-slate-800 mb-4">Nuevo Registro</h2>
                              <button onClick={() => setInputMethod('voice')} className="w-full py-6 bg-white border-2 border-blue-100 rounded-3xl shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all"><div className="p-4 bg-blue-100 text-blue-600 rounded-full"><Icons.Mic className="w-8 h-8" /></div><span className="font-bold text-slate-700">Nota de Voz (IA)</span></button>
                              <label className="w-full py-6 bg-white border-2 border-purple-100 rounded-3xl shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all cursor-pointer"><div className="p-4 bg-purple-100 text-purple-600 rounded-full"><Icons.Camera className="w-8 h-8" /></div><span className="font-bold text-slate-700">Analizar Foto (IA)</span><input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} /></label>
+                             <label className="w-full py-6 bg-white border-2 border-orange-100 rounded-3xl shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all cursor-pointer"><div className="p-4 bg-orange-100 text-orange-600 rounded-full"><Icons.Activity className="w-8 h-8" /></div><span className="font-bold text-slate-700">Lote de Fotos (IA)</span><input type="file" multiple accept="image/*" className="hidden" onChange={handleBatchUpload} /></label>
                              <button onClick={() => setInputMethod('manual')} className="w-full py-6 bg-white border-2 border-slate-100 rounded-3xl shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all"><div className="p-4 bg-slate-100 text-slate-600 rounded-full"><Icons.CheckSquare className="w-8 h-8" /></div><span className="font-bold text-slate-700">Manual</span></button>
                              <button onClick={() => setView('home')} className="mt-8 text-slate-400 font-medium">Cancelar</button>
                         </div>
@@ -659,7 +759,16 @@ const App: React.FC = () => {
                         />
                     )}
                     
-                    {aiProcessing && <div className="absolute inset-0 bg-white/80 z-50 flex flex-col items-center justify-center backdrop-blur-sm"><div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div><p className="font-bold text-slate-700">Analizando con IA...</p></div>}
+                    {aiProcessing && <div className="absolute inset-0 bg-white/80 z-[60] flex flex-col items-center justify-center backdrop-blur-sm px-6 text-center">
+                        <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                        <p className="font-bold text-slate-700">{batchProgress ? `Procesando lote: ${batchProgress.current}/${batchProgress.total} comprobando...` : 'Analizando con IA...'}</p>
+                        {batchProgress && batchProgress.logs.length > 0 && (
+                            <div className="mt-6 w-full max-w-sm bg-slate-100 rounded-xl p-4 text-left max-h-48 overflow-y-auto border border-slate-200">
+                                <h4 className="text-xs font-bold text-slate-500 uppercase mb-2">Progreso</h4>
+                                {batchProgress.logs.map((l, i) => <p key={i} className="text-xs text-slate-600 mb-1 leading-snug break-words">{l}</p>)}
+                            </div>
+                        )}
+                    </div>}
                 </div>
             )}
             <Navbar currentView={view} setView={setView} hasUnread={hasUnreadMessages} />
